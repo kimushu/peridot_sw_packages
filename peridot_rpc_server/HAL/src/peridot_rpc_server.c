@@ -51,14 +51,6 @@ static sem_t irq_sem;
 static volatile int irq_sem;
 #endif
 
-enum {
-	JRPC_ERR_PARSE_ERROR      = -32700,
-	JRPC_ERR_INVALID_REQUEST  = -32600,
-	JRPC_ERR_METHOD_NOT_FOUND = -32601,
-	JRPC_ERR_INVALID_PARAMS   = -32602,
-	JRPC_ERR_INTERNAL_ERROR   = -32603,
-};
-
 // Registered method list
 static peridot_rpc_server_method_entry *method_first, *method_last;
 
@@ -215,7 +207,7 @@ send_response:
 		int doclen;
 		doclen = bson_measure_document(result);
 		if ((len + doclen) > resBuf.len) {
-			result_errno = JRPC_ERR_INTERNAL_ERROR;
+			result_errno = JSONRPC_ERR_INTERNAL_ERROR;
 			len += 32;
 		} else {
 			len += doclen;
