@@ -255,6 +255,90 @@ type_error:
 	return default_value;
 }
 
+const void *bson_get_binary(const void *doc, int offset, int *lenptr)
+{
+	const char *data;
+	const char *end;
+	int binlen;
+
+	if ((!doc) || (offset < 4)) {
+		goto no_bson;
+	}
+
+	// Check BSON document structure
+	end = (const char *)doc + read_unaligned_int(doc);
+	data = (const char *)doc + offset;
+	if ((end <= data) || (end[-1] != '\0')) {
+		goto not_valid_bson;
+	}
+
+	// Validate element type
+	if (data[0] != 0x05) {
+		goto type_error;
+	}
+	++data;
+
+	// Skip element name
+	data += strnlen(data, end - data) + 1;
+	if ((end <= data) || (data[-1] != '\0')) {
+		goto not_valid_bson;
+	}
+
+	// Read binary length and skip subtype
+	binlen = read_unaligned_int(data);
+	data += (4 + 1);
+	if ((binlen <= 0) || (end - data) < binlen) {
+		goto not_valid_bson;
+	}
+
+	if (lenptr) {
+		*lenptr = binlen;
+	}
+
+	return data;
+
+no_bson:
+not_valid_bson:
+type_error:
+	return NULL;
+}
+
+int bson_get_int32(const void *doc, int offset, int default_value)
+{
+	const char *data;
+	const char *end;
+
+	if ((!doc) || (offset < 4)) {
+		goto no_bson;
+	}
+
+	// Check BSON document structure
+	end = (const char *)doc + read_unaligned_int(doc);
+	data = (const char *)doc + offset;
+	if ((end <= data) || (end[-1] != '\0')) {
+		goto not_valid_bson;
+	}
+
+	// Validate element type
+	if (data[0] != 0x10) {
+		goto type_error;
+	}
+	++data;
+
+	// Skip element name
+	data += strnlen(data, end - data) + 1;
+	if ((end <= data) || (data[-1] != '\0')) {
+		goto not_valid_bson;
+	}
+
+	return read_unaligned_int(data);
+
+no_bson:
+not_valid_bson:
+type_error:
+	return default_value;
+}
+
 int bson_set_string(void *doc, const char *key, const char *string)
 {
 	int keylen = strlen(key) + 1;
@@ -378,6 +462,50 @@ int bson_set_null(void *doc, const char *key)
 int bson_measure_null(const char *key)
 {
 	return bson_set_null(NULL, key);
+}
+
+static int bson_set_binary(void *doc, const char *key, int binlen, void **bufptr, char subtype)
+{
+	int keylen = strlen(key) + 1;
+
+	if (binlen < 0) {
+		return -1;
+	}
+
+	if (doc) {
+		char *data = (char *)doc;
+		char *end = data + read_unaligned_int(data);
+
+		end[-1] = 0x05;
+		memcpy(end, key, keylen);
+		end += keylen;
+
+		write_unaligned_int(end, binlen);
+		end += 4;
+
+		*end++ = subtype;
+
+		if (bufptr) {
+			*bufptr = end;
+		}
+		memset(end, 0, binlen);
+		end += binlen;
+
+		*end++ = 0x00;
+		write_unaligned_int(data, end - data);
+	}
+
+	return 1 + keylen + 4 + 1 + binlen;
+}
+
+int bson_set_binary_generic(void *doc, const char* key, int binlen, void **bufptr)
+{
+	return bson_set_binary(doc, key, binlen, bufptr, 0x00);
+}
+
+int bson_measure_binary(const char *key, int binlen)
+{
+	return bson_set_binary_generic(NULL, key, binlen, NULL);
 }
 
 int bson_set_element(void *doc1, const char *key, const void *doc2, int offset)
