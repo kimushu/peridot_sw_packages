@@ -23,7 +23,7 @@ typedef struct rubic_agent_fddata_s {
 } rubic_agent_fddata;
 
 extern void rubic_agent_init(void);
-extern void rubic_agent_set_interrupt_handler(void *(*handler)(int reason));
+extern void rubic_agent_set_interrupt_handler(void (*handler)(int reason));
 extern const char *rubic_agent_wait_start_request(void);
 extern int rubic_agent_set_program(const char *name);
 

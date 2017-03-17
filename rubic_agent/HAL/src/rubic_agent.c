@@ -51,7 +51,7 @@ static const char *info_json =
 	"]"
 "}";
 
-static void *(*intr_handler)(int reason);
+static void (*intr_handler)(int reason);
 static char *current_program;
 static sem_t sem_start;
 
@@ -70,7 +70,7 @@ void rubic_agent_init(void)
  * Set handler for interrupt program
  * (Notice: handler may be called from another thread)
  */
-void rubic_agent_set_interrupt_handler(void *(*handler)(int reason))
+void rubic_agent_set_interrupt_handler(void (*handler)(int reason))
 {
 	intr_handler = handler;
 }
