@@ -196,6 +196,7 @@ static const alt_dev named_fifo_dev_template = {
 	NULL, /* ioctl */
 };
 
+#if (NAMED_FIFO_STDIN_ENABLE) || (NAMED_FIFO_STDOUT_ENABLE) || (NAMED_FIFO_STDERR_ENABLE)
 static void named_fifo_enable_stdio(int new_fd, int flags, const char *name, int size, int back_pressure)
 {
 	int old_fd;
@@ -210,6 +211,7 @@ static void named_fifo_enable_stdio(int new_fd, int flags, const char *name, int
 		alt_release_fd(old_fd);
 	}
 }
+#endif  /* (NAMED_FIFO_STDIN_ENABLE) || (NAMED_FIFO_STDOUT_ENABLE) || (NAMED_FIFO_STDERR_ENABLE) */
 
 void named_fifo_init(void)
 {
