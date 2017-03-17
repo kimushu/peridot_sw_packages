@@ -234,6 +234,7 @@ send_response:
 		bson_set_subdocument(output, "error", errobj);
 	}
 	bson_set_element(output, "id", input, off_id);
+	len = bson_measure_document(output);
 
 	free((void *)input);
 	free(result);
