@@ -384,6 +384,75 @@ static void *peridot_client_fs_write(const void *params, int max_result_len)
 	return result;
 }
 
+/*
+ * method: "fs.lseek"
+ * params: {
+ *   fd: <int32>     // file descriptor
+ *   offset: <int32> // offset bytes from 'whence'
+ *   whence: <int32> // whence (SEEK_SET=0,SEEK_CUR=1,SEEK_END=2)
+ * }
+ * result: {
+ *   offset: <int32> // offset bytes (from beginning of file) after seek
+ * }
+ */
+static void *peridot_client_fs_lseek(const void *params, int max_result_len)
+{
+	int off_vfd;
+	int off_offset;
+	int off_whence;
+	int fd;
+	int offset;
+	int whence;
+	int result_len;
+	void *result;
+	int offset_after;
+
+	if (bson_get_props(params,
+			"fd", &off_vfd,
+			"offset", &off_offset,
+			"whence", &off_whence,
+			NULL) < 0) {
+		errno = JSONRPC_ERR_INVALID_REQUEST;
+		return NULL;
+	}
+
+	if ((fd = peridot_client_fs_get_fd(params, off_vfd, NULL)) < 0) {
+		// errno already set
+		return NULL;
+	}
+
+	offset = bson_get_int32(params, off_offset, 0);
+
+	if ((whence = bson_get_int32(params, off_whence, -1)) < 0 || (whence > 2)) {
+		errno = JSONRPC_ERR_INVALID_PARAMS;
+		return NULL;
+	}
+
+	result_len = bson_empty_size + bson_measure_int32("offset");
+	if (result_len > max_result_len) {
+		errno = JSONRPC_ERR_INTERNAL_ERROR;
+		return NULL;
+	}
+	result = malloc(result_len);
+	if (!result) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	offset_after = lseek(fd, offset, whence);
+	if (offset_after < 0) {
+		// errno already set
+		int errno_saved = errno;
+		free(result);
+		errno = errno_saved;
+		return NULL;
+	}
+
+	memcpy(result, &bson_empty_document, bson_empty_size);
+	bson_set_int32(result, "offset", offset_after);
+	return result;
+}
+
 static const char *find_separator(const char *text)
 {
 	char ch;
@@ -469,6 +538,7 @@ void peridot_client_fs_init(const char *rw_path, const char *ro_path, const char
 	peridot_rpc_server_register_method("fs.close", peridot_client_fs_close);
 	peridot_rpc_server_register_method("fs.read", peridot_client_fs_read);
 	peridot_rpc_server_register_method("fs.write", peridot_client_fs_write);
+	peridot_rpc_server_register_method("fs.lseek", peridot_client_fs_lseek);
 }
 
 void peridot_client_fs_add_file(const char *path, int flags)
