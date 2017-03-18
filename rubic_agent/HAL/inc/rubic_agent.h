@@ -9,23 +9,41 @@ typedef struct rubic_agent_info_s {
 } rubic_agent_info;
 
 enum {
-	RUBIC_AGENT_REQ_INFO,
-	RUBIC_AGENT_REQ_RUN,
-	RUBIC_AGENT_REQ_STOP,
+	RUBIC_AGENT_REQUEST_NONE,
+	RUBIC_AGENT_REQUEST_START,
+	RUBIC_AGENT_REQUEST_FORMAT,
+};
+
+typedef struct rubic_agent_message_s {
+	int request;
+	union {
+		struct {
+			const char *program;
+		} start;
+		struct {
+		} format;
+	} body;
+} rubic_agent_message;
+
+enum {
+	RUBIC_AGENT_FILE_INFO,
+	RUBIC_AGENT_FILE_RUN,
+	RUBIC_AGENT_FILE_STOP,
+	RUBIC_AGENT_FILE_FORMAT,
 };
 
 typedef struct rubic_agent_fddata_s {
-	int request;
-	int data_ptr;
-	int data_len;
-	int data_max;
-	char data[0];
+	int file;
+	int buf_ptr;
+	int buf_len;
+	int buf_max;
+	char buf[0];
 } rubic_agent_fddata;
 
 extern void rubic_agent_init(void);
 extern void rubic_agent_set_interrupt_handler(void (*handler)(int reason));
-extern const char *rubic_agent_wait_start_request(void);
-extern int rubic_agent_set_program(const char *name);
+extern void rubic_agent_wait_request(rubic_agent_message *msg);
+extern void rubic_agent_send_response(rubic_agent_message *msg);
 
 #define RUBIC_AGENT_INSTANCE(name, state) extern int alt_no_storage
 

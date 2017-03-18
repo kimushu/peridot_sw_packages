@@ -55,6 +55,8 @@ static void (*intr_handler)(int reason);
 static char *current_program;
 static sem_t sem_start;
 
+#define FORMAT_PROGRAM ((const char *)1)
+
 /*
  * Start Rubic agent
  */
@@ -76,36 +78,32 @@ void rubic_agent_set_interrupt_handler(void (*handler)(int reason))
 }
 
 /*
- * Returns program name to start
- * (This function will block a caller thread until receive start request)
+ * Wait for request
+ * (This function will block a caller thread until receive request)
  */
-const char *rubic_agent_wait_start_request(void)
+void rubic_agent_wait_request(rubic_agent_message *msg)
 {
 	while (!current_program) {
 		sem_wait(&sem_start);
 	}
-	return current_program;
+	if (current_program == FORMAT_PROGRAM) {
+		msg->request = RUBIC_AGENT_REQUEST_FORMAT;
+	} else {
+		msg->request = RUBIC_AGENT_REQUEST_START;
+		msg->body.start.program = current_program;
+	}
 }
 
 /*
- * Set current program name
- * (If name is NULL, it means that program has been finished)
+ * Send response
  */
-int rubic_agent_set_program(const char *name)
+void rubic_agent_send_response(rubic_agent_message *msg)
 {
 	char *old_program = current_program;
-	if (old_program == name) {
-		// No change
-		return 0;
+	current_program = NULL;
+	if (old_program != FORMAT_PROGRAM) {
+		free(old_program);
 	}
-	if (!old_program && name) {
-		// Cannot start program by this function
-		return -1;
-	}
-	char *new_program = name ? strdup(name) : NULL;
-	current_program = new_program;
-	free(old_program);
-	return 0;
 }
 
 /* Handler for open() */
@@ -117,19 +115,25 @@ static int rubic_agent_open(alt_fd *fd, const char *name, int flags, int mode)
 
 	name += strlen(fs_dev.name) + 1;
 	if (strcmp(name, "info") == 0) {
-		request = RUBIC_AGENT_REQ_INFO;
+		request = RUBIC_AGENT_FILE_INFO;
 		if (is_write) {
 			// Not writable
 			return -EACCES;
 		}
 	} else if (strcmp(name, "run") == 0) {
-		request = RUBIC_AGENT_REQ_RUN;
+		request = RUBIC_AGENT_FILE_RUN;
 		if (is_write && current_program) {
 			// Not writable when program is running
 			return -EBUSY;
 		}
 	} else if (strcmp(name, "stop") == 0) {
-		request = RUBIC_AGENT_REQ_STOP;
+		request = RUBIC_AGENT_FILE_STOP;
+	} else if (strcmp(name, "format") == 0) {
+		request = RUBIC_AGENT_FILE_FORMAT;
+		if (is_write && current_program) {
+			// Not writable when program is running
+			return -EBUSY;
+		}
 	}
 
 	if (request < 0) {
@@ -140,25 +144,31 @@ static int rubic_agent_open(alt_fd *fd, const char *name, int flags, int mode)
 	if (!data) {
 		return -ENOMEM;
 	}
-	data->request = request;
-	data->data_ptr = 0;
-	data->data_len = 0;
-	data->data_max = FILENAME_MAX;
+	data->file = request;
+	data->buf_ptr = 0;
+	data->buf_max = FILENAME_MAX;
+	data->buf[0] = '\0';
 	fd->priv = (alt_u8 *)data;
 
-	switch (data->request) {
-	case RUBIC_AGENT_REQ_INFO:
-		strncpy(data->data, info_json, data->data_max);
+	switch (data->file) {
+	case RUBIC_AGENT_FILE_INFO:
+		strncpy(data->buf, info_json, data->buf_max);
 		break;
-	case RUBIC_AGENT_REQ_RUN:
+	case RUBIC_AGENT_FILE_RUN:
 		// Return current program name
-		strncpy(data->data, current_program, data->data_max);
-		data->data_len = strnlen(data->data, data->data_max - 1) + 1;
+		if (current_program && current_program != FORMAT_PROGRAM) {
+			strncpy(data->buf, current_program, data->buf_max);
+		}
 		break;
-	case RUBIC_AGENT_REQ_STOP:
+	case RUBIC_AGENT_FILE_STOP:
 		// No initial data
 		break;
+	case RUBIC_AGENT_FILE_FORMAT:
+		// Return format is running (1:running)
+		strncpy(data->buf, (current_program == FORMAT_PROGRAM) ? "1" : "0", data->buf_max);
+		break;
 	}
+	data->buf_len = strnlen(data->buf, data->buf_max - 1) + 1;
 	return 0;
 }
 
@@ -174,19 +184,27 @@ static int rubic_agent_close(alt_fd *fd)
 	}
 
 	// When writing end
-	switch (data->request) {
-	case RUBIC_AGENT_REQ_RUN:
+	switch (data->file) {
+	case RUBIC_AGENT_FILE_RUN:
 		if (current_program) {
 			// FIXME
 			break;
 		}
-		current_program = strndup(data->data, data->data_len);
+		current_program = strndup(data->buf, data->buf_len);
 		sem_post(&sem_start);
 		break;
-	case RUBIC_AGENT_REQ_STOP:
+	case RUBIC_AGENT_FILE_STOP:
 		if (intr_handler) {
 			intr_handler(0 /* TODO: reason */);
 		}
+		break;
+	case RUBIC_AGENT_FILE_FORMAT:
+		if (current_program) {
+			// FIXME
+			break;
+		}
+		current_program = FORMAT_PROGRAM;
+		sem_post(&sem_start);
 		break;
 	}
 
@@ -199,13 +217,13 @@ cleanup:
 static int rubic_agent_read(alt_fd *fd, char *ptr, int len)
 {
 	rubic_agent_fddata *data = (rubic_agent_fddata *)fd->priv;
-	int read_len = data->data_len - data->data_ptr;
+	int read_len = data->buf_len - data->buf_ptr;
 	if (len < read_len) {
 		read_len = len;
 	}
 	if (read_len > 0) {
-		memcpy(ptr, data->data + data->data_ptr, read_len);
-		data->data_ptr += read_len;
+		memcpy(ptr, data->buf + data->buf_ptr, read_len);
+		data->buf_ptr += read_len;
 	}
 	return read_len;
 }
@@ -213,16 +231,16 @@ static int rubic_agent_read(alt_fd *fd, char *ptr, int len)
 static int rubic_agent_write(alt_fd *fd, const char *ptr, int len)
 {
 	rubic_agent_fddata *data = (rubic_agent_fddata *)fd->priv;
-	int write_len = data->data_max - data->data_ptr;
+	int write_len = data->buf_max - data->buf_ptr;
 	if (len < write_len) {
 		write_len = len;
 	}
 	if (write_len > 0) {
-		memcpy(data->data + data->data_ptr, ptr, write_len);
-		data->data_ptr += write_len;
+		memcpy(data->buf + data->buf_ptr, ptr, write_len);
+		data->buf_ptr += write_len;
 	} else if (len > 0) {
 		return -ENOSPC;
 	}
-	data->data_len = data->data_ptr;
+	data->buf_len = data->buf_ptr;
 	return write_len;
 }
