@@ -202,6 +202,7 @@ static int peridot_rpc_server_process_request(void)
 	len += bson_measure_string("jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
 	len += bson_measure_null("result");
 	len += bson_measure_element("id", input, off_id);
+	// len == (minimum response size with result=null)
 
 	errno = 0;
 	result = (*method->func)(
@@ -215,10 +216,13 @@ send_response:
 		doclen = bson_measure_document(result);
 		if ((len + doclen) > resBuf.len) {
 			result_errno = JSONRPC_ERR_INTERNAL_ERROR;
-			len += 32;
 		} else {
 			len += doclen;
 		}
+	}
+	if (result_errno != 0) {
+		len += 32;
+		// Now len > (minimum response size with error:{code:number})
 	}
 	output = malloc(len);
 	if (!output) {
