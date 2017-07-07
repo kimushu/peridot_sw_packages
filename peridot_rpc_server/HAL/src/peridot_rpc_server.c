@@ -24,7 +24,7 @@
 # define ISOLATED
 #endif
 
-#ifdef NIOS2_DCACHE_LINE_SIZE
+#if (NIOS2_DCACHE_LINE_SIZE) > 0
 # define ALIGNED __attribute__((aligned(NIOS2_DCACHE_LINE_SIZE)))
 #else
 # define ALIGNED
