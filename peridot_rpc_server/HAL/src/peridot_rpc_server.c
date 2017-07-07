@@ -5,6 +5,7 @@
 #include <string.h>
 #include <malloc.h>
 #include <stdlib.h>
+#include "sys/alt_cache.h"
 #include "peridot_rpc_server.h"
 #include "peridot_swi.h"
 #include "bson.h"
@@ -23,15 +24,21 @@
 # define ISOLATED
 #endif
 
+#ifdef NIOS2_DCACHE_LINE_SIZE
+# define ALIGNED __attribute__((aligned(NIOS2_DCACHE_LINE_SIZE)))
+#else
+# define ALIGNED
+#endif
+
 // Macro for generating uncached data pointer (using bypass-cache bit)
 #define UCPTR(p) ((typeof(p))((uintptr_t)(p) | (1u<<31)))
 
 // Public RPC server information
-ISOLATED static peridot_rpc_server_info pub_srvInfo;
+ISOLATED ALIGNED static peridot_rpc_server_info pub_srvInfo;
 
 // Public RPC request/response buffer
-ISOLATED static char pub_reqBuf[(PERIDOT_RPCSRV_REQUEST_LENGTH)];
-ISOLATED static char pub_resBuf[(PERIDOT_RPCSRV_RESPONSE_LENGTH)];
+ISOLATED ALIGNED static char pub_reqBuf[(PERIDOT_RPCSRV_REQUEST_LENGTH)];
+ISOLATED ALIGNED static char pub_resBuf[(PERIDOT_RPCSRV_RESPONSE_LENGTH)];
 
 // Server status
 static volatile int srv_running;
@@ -109,7 +116,7 @@ static int peridot_rpc_server_process_request(void)
 	int off_params;
 	int off_id = -1;
 	char *result = NULL;
-	int result_errno;
+	int result_errno = 0;
 
 	for (;;) {
 		if (!srv_running) {
@@ -317,14 +324,15 @@ void peridot_rpc_server_init(void)
 	*UCPTR((alt_u32 *)resBuf.ptr) = 0;
 
 	// Initialize server information
-	*UCPTR(&pub_srvInfo.if_ver) = PERIDOT_RPCSRV_IF_VERSION;
-	*UCPTR(&pub_srvInfo.reserved) = 0;
-	*UCPTR(&pub_srvInfo.host_id[0]) = 0;
-	*UCPTR(&pub_srvInfo.host_id[1]) = 0;
-	*UCPTR(&pub_srvInfo.request.len) = reqBuf.len;
-	*UCPTR(&pub_srvInfo.request.ptr) = reqBuf.ptr;
-	*UCPTR(&pub_srvInfo.response.len) = resBuf.len;
-	*UCPTR(&pub_srvInfo.response.ptr) = resBuf.ptr;
+	pub_srvInfo.if_ver = PERIDOT_RPCSRV_IF_VERSION;
+	pub_srvInfo.reserved = 0;
+	pub_srvInfo.host_id[0] = 0;
+	pub_srvInfo.host_id[1] = 0;
+	pub_srvInfo.request.len = reqBuf.len;
+	pub_srvInfo.request.ptr = reqBuf.ptr;
+	pub_srvInfo.response.len = resBuf.len;
+	pub_srvInfo.response.ptr = resBuf.ptr;
+	alt_dcache_flush(&pub_srvInfo, sizeof(pub_srvInfo));
 
 	// Publish server information
 	peridot_swi_set_handler(peridot_rpc_server_handler, NULL);
