@@ -144,7 +144,7 @@ retry:
 		write_offset = (write_offset + chunk_len);
 		if (dev->read_chunk == dev->write_chunk) {
 			if ((dev->flags & NAMED_FIFO_FLAG_BUFFER_FULL) ||
-				((dev->read_offset >= dev->write_offset) &&
+				((dev->read_offset > dev->write_offset) &&
 				 (dev->read_offset <= write_offset))) {
 				// old data may be discarded
 				dev->read_offset = write_offset & (dev->chunk_size - 1);
