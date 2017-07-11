@@ -43,9 +43,17 @@ ISOLATED ALIGNED static char pub_resBuf[(PERIDOT_RPCSRV_RESPONSE_LENGTH)];
 // Server status
 static volatile int srv_running;
 
+// Cached HostID
+static alt_u32 cached_host_id[2];
+
+// Startup callback
+static struct {
+	peridot_rpc_server_callback *first, *last;
+} cb_startup;
+
 // Buffer pointers
-peridot_rpc_server_buffer reqBuf;
-peridot_rpc_server_buffer resBuf;
+static peridot_rpc_server_buffer reqBuf;
+static peridot_rpc_server_buffer resBuf;
 
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
 // Mutex for locking buffer operations
@@ -109,6 +117,7 @@ static int peridot_rpc_server_process_request(void)
 	const void *input;
 	void *output;
 
+	alt_u32 host_id[2];
 	alt_u32 len;
 	int off_jsonrpc;
 	int off_method;
@@ -142,6 +151,9 @@ static int peridot_rpc_server_process_request(void)
 
 	// still in critical section
 
+	host_id[0] = *UCPTR(&pub_srvInfo.host_id[0]);
+	host_id[1] = *UCPTR(&pub_srvInfo.host_id[1]);
+
 	if (len > reqBuf.len) {
 		// Too large
 		input = NULL;
@@ -162,6 +174,18 @@ static int peridot_rpc_server_process_request(void)
 	*UCPTR(&pub_srvInfo.request.len) = reqBuf.len;
 	*UCPTR(&pub_srvInfo.request.ptr) = reqBuf.ptr;
 	*UCPTR((alt_u32 *)reqBuf.ptr) = 0;
+
+	if ((host_id[0] != cached_host_id[0]) || (host_id[1] != cached_host_id[1])) {
+		peridot_rpc_server_callback *cb;
+
+		cached_host_id[0] = host_id[0];
+		cached_host_id[1] = host_id[1];
+
+		// Invoke startup callbacks
+		for (cb = cb_startup.first; cb; cb = cb->next) {
+			(*cb->func)();
+		}
+	}
 
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
 	pthread_mutex_unlock(&buf_mutex);
@@ -345,6 +369,8 @@ void peridot_rpc_server_init(void)
 	atexit(peridot_rpc_server_stop);
 
 	srv_running = 1;
+	cached_host_id[0] = 0;
+	cached_host_id[1] = 0;
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
 	for (i = 0; i < (PERIDOT_RPCSRV_WORKER_THREADS); ++i) {
 		pthread_t tid;
@@ -374,6 +400,20 @@ void peridot_rpc_server_register_method(const char *name, peridot_rpc_server_fun
 		method_first = entry;
 	}
 	method_last = entry;
+}
+
+/*
+ * Register startup (new host) callback
+ */
+void peridot_rpc_server_register_startup(peridot_rpc_server_callback *callback)
+{
+	callback->next = NULL;
+	if (cb_startup.first) {
+		cb_startup.last->next = callback;
+	} else {
+		cb_startup.first = callback;
+	}
+	cb_startup.last = callback;
 }
 
 /*

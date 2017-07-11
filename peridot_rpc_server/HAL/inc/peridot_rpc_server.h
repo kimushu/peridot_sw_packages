@@ -84,6 +84,11 @@ typedef struct peridot_rpc_server_info_s {
 
 typedef void *(*peridot_rpc_server_function)(const void *params, int max_result_length);
 
+typedef struct peridot_rpc_server_callback_s {
+	void (*func)(void);
+	struct peridot_rpc_server_callback_s *next;
+} peridot_rpc_server_callback;
+
 typedef struct peridot_rpc_server_method_entry_s {
 	struct peridot_rpc_server_method_entry_s *next;
 	peridot_rpc_server_function func;
@@ -92,6 +97,7 @@ typedef struct peridot_rpc_server_method_entry_s {
 
 extern void peridot_rpc_server_init(void);
 extern void peridot_rpc_server_register_method(const char *name, peridot_rpc_server_function func);
+extern void peridot_rpc_server_register_startup(peridot_rpc_server_callback *callback);
 extern void peridot_rpc_server_process(void);
 
 #define PERIDOT_RPC_SERVER_INSTANCE(name, state) extern int alt_no_storage

@@ -4,6 +4,7 @@
 #include <malloc.h>
 #include <unistd.h>
 #include "os/alt_sem.h"
+#include "sys/alt_irq.h"
 #include "peridot_client_fs.h"
 #include "peridot_rpc_server.h"
 #include "bson.h"
@@ -19,8 +20,9 @@ static peridot_client_fs_path_entry *ll_first;
 static peridot_client_fs_path_entry *ll_last;
 
 enum {
-	VFD_FREE  = -1,
-	VFD_ALLOC = -2,
+	VFD_FREE     = -1,
+	VFD_ALLOC    = -2,
+	VFD_CANCELED = -3,
 };
 static int vfd_list[PERIDOT_CLIENT_FS_MAX_FDS];
 
@@ -119,6 +121,7 @@ static void *peridot_client_fs_open(const void *params, int max_result_len)
 	int fd;
 	int result_len;
 	void *result;
+	alt_irq_context context;
 
 	if (bson_get_props(params,
 			"path", &off_path,
@@ -175,7 +178,20 @@ static void *peridot_client_fs_open(const void *params, int max_result_len)
 		return NULL;
 	}
 
-	vfd_list[vfd] = fd;
+	context = alt_irq_disable_all();
+	if (vfd_list[vfd] == VFD_ALLOC) {
+		vfd_list[vfd] = fd;
+	} else {
+		vfd_list[vfd] = VFD_FREE;
+		vfd = -1;
+	}
+	alt_irq_enable_all(context);
+	if (vfd < 0) {
+		free(result);
+		close(fd);
+		errno = EBADF;
+		return NULL;
+	}
 	memcpy(result, &bson_empty_document, bson_empty_size);
 	bson_set_int32(result, "fd", vfd);
 	errno = 0;
@@ -521,6 +537,30 @@ static void peridot_client_fs_add_list(const char *list, int flags)
 	}
 }
 
+static void peridot_client_fs_cleanup(void)
+{
+	int vfd, fd;
+
+	ALT_SEM_PEND(sem_lock, 0);
+	for (vfd = 0; vfd < (sizeof(vfd_list) / sizeof(*vfd_list)); ++vfd) {
+		alt_irq_context context = alt_irq_disable_all();
+		fd = vfd_list[vfd];
+		if (vfd_list[vfd] == VFD_ALLOC) {
+			vfd_list[vfd] = VFD_CANCELED;
+		}
+		alt_irq_enable_all(context);
+		if (fd >= 0) {
+			vfd_list[vfd] = VFD_FREE;
+			close(fd);
+		}
+	}
+	ALT_SEM_POST(sem_lock);
+}
+
+static peridot_rpc_server_callback cb_startup = {
+	.func = peridot_client_fs_cleanup,
+};
+
 void peridot_client_fs_init(const char *rw_path, const char *ro_path, const char *wo_path)
 {
 	int i;
@@ -539,6 +579,8 @@ void peridot_client_fs_init(const char *rw_path, const char *ro_path, const char
 	peridot_rpc_server_register_method("fs.read", peridot_client_fs_read);
 	peridot_rpc_server_register_method("fs.write", peridot_client_fs_write);
 	peridot_rpc_server_register_method("fs.lseek", peridot_client_fs_lseek);
+
+	peridot_rpc_server_register_startup(&cb_startup);
 }
 
 void peridot_client_fs_add_file(const char *path, int flags)
