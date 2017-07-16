@@ -8,6 +8,28 @@
 #include "sys/alt_llist.h"
 #include "priv/alt_file.h"
 
+static int named_fifo_open(alt_fd *fd, const char *file, int flags, int mode)
+{
+	named_fifo_dev *dev = (named_fifo_dev *)fd->dev;
+
+	ALT_SEM_PEND(dev->lock_common, 0);
+	++dev->ref_count;
+	ALT_SEM_POST(dev->lock_common);
+
+	return 0;
+}
+
+static int named_fifo_close(alt_fd *fd)
+{
+	named_fifo_dev *dev = (named_fifo_dev *)fd->dev;
+
+	ALT_SEM_PEND(dev->lock_common, 0);
+	--dev->ref_count;
+	ALT_SEM_POST(dev->lock_common);
+
+	return 0;
+}
+
 static int named_fifo_read(alt_fd *fd, char *ptr, int len)
 {
 	named_fifo_dev *dev = (named_fifo_dev *)fd->dev;
@@ -186,9 +208,9 @@ retry:
 
 static const alt_dev named_fifo_dev_template = {
 	ALT_LLIST_ENTRY,
-	NULL, /* filled in named_fifo_create */
-	NULL, /* open */
-	NULL, /* close */
+	NULL, /* name: filled in named_fifo_create */
+	named_fifo_open,
+	named_fifo_close,
 	named_fifo_read,
 	named_fifo_write,
 	NULL, /* lseek */
@@ -296,6 +318,76 @@ int named_fifo_create(const char *name, int max_size, int back_pressure)
 
 	alt_dev_reg(&dev->dev);
 	return 0;
+}
+
+static int named_fifo_lookup(const char *name, named_fifo_dev **pdev)
+{
+	extern alt_llist alt_dev_list;
+	named_fifo_dev *dev = (named_fifo_dev *)alt_find_dev(name, &alt_dev_list);
+	*pdev = NULL;
+
+	if (!dev) {
+		return -ENOENT;
+	}
+
+	if (dev->dev.open != named_fifo_open) {
+		return -EINVAL;
+	}
+
+	*pdev = dev;
+	return 0;
+}
+
+static int named_fifo_reset(const char *name, int destroy)
+{
+	named_fifo_dev *dev;
+	named_fifo_chunk *chunk;
+	int result;
+
+	result = named_fifo_lookup(name, &dev);
+	if (result != 0) {
+		return result;
+	}
+
+	ALT_SEM_PEND(dev->lock_common, 0);
+	if (dev->ref_count > 0) {
+		ALT_SEM_POST(dev->lock_common);
+		return -EBUSY;
+	}
+
+	chunk = dev->read_chunk;
+	while (chunk) {
+		named_fifo_chunk *next = NULL;
+		if (dev->flags & NAMED_FIFO_FLAG_AUTO_GROWTH) {
+			next = chunk->next;
+		}
+		if ((destroy) || (chunk != dev->read_chunk)) {
+			free(chunk);
+		}
+		chunk = next;
+	}
+
+	if (destroy) {
+		free(dev);
+		return 0;
+	}
+
+	dev->read_offset = 0;
+	dev->write_chunk = dev->read_chunk;
+	dev->write_offset = 0;
+	dev->flags &= ~NAMED_FIFO_FLAG_BUFFER_FULL;
+	ALT_SEM_POST(dev->lock_common);
+	return 0;
+}
+
+int named_fifo_destroy(const char *name)
+{
+	return named_fifo_reset(name, 1);
+}
+
+int named_fifo_flush(const char *name)
+{
+	return named_fifo_reset(name, 0);
 }
 
 int mkfifo(const char *name, mode_t mode)

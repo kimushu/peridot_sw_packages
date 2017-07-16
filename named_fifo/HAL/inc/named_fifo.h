@@ -27,6 +27,7 @@ typedef struct named_fifo_chunk_s {
 typedef struct named_fifo_dev_s {
 	alt_dev dev;
 	int flags;
+	int ref_count;
 	int chunk_size;
 	int read_offset;
 	named_fifo_chunk *read_chunk;
@@ -41,6 +42,8 @@ typedef struct named_fifo_dev_s {
 
 extern void named_fifo_init(void);
 extern int named_fifo_create(const char *name, int max_size, int back_pressure);
+extern int named_fifo_destroy(const char *name);
+extern int named_fifo_flush(const char *name);
 extern int mkfifo(const char *name, mode_t mode);
 
 #define NAMED_FIFO_INSTANCE(name, state) extern int alt_no_storage
