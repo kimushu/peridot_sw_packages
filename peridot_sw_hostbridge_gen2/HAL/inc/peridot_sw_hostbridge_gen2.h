@@ -6,8 +6,10 @@ extern "C" {
 #endif
 
 enum {
-    LISTENER_FLAG_SOP = (1<<0),
-    LISTENER_FLAG_EOP = (1<<1),
+    LISTENER_FLAG_SOP       = (1<<0),
+    LISTENER_FLAG_PACKET    = (1<<1),
+    LISTENER_FLAG_EOP       = (1<<2),
+    LISTENER_FLAG_BREAK     = (1<<3),
 };
 
 typedef struct hostbridge_listener_s {
@@ -15,8 +17,8 @@ typedef struct hostbridge_listener_s {
     alt_u8 channel;
     alt_u8 packetized;
     alt_u16 flags;
-    int (*write)(struct hostbridge_listener *listener, const void *ptr, int len, int flags);
-    int (*read)(struct hostbridge_listener *listener, void *ptr, int len, int *flags);
+    int (*write)(struct hostbridge_listener *listener, const void *ptr, int len);
+    int (*read)(struct hostbridge_listener *listener, void *ptr, int len);
 } hostbridge_listener;
 
 extern void peridot_sw_hostbridge_gen2_init(void);
