@@ -1,3 +1,148 @@
+#include "peridot_sw_hostbridge_gen2.h"
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/fcntl.h>
+#include <errno.h>
+
+#define REQUEST_BUFFER_LENGTH   64
+
+#define AST_SOP         0x7a
+#define AST_EOP         0x7b
+#define AST_CHANNEL     0x7c
+#define AST_ESCAPED     0x7d
+#define AST_ESCAPE_XOR  0x20
+
+// Channel flags
+#define FLAG_IN_PACKET  (1<<0)
+#define FLAG_LAST_BYTE  (1<<1)
+
+// Global flags
+#define FLAG_CHANNEL    (1<<0)
+#define FLAG_ESCAPED    (1<<1)
+
+static struct peridot_sw_hostbridge_gen2_state_s {
+    int fd;                         // File descriptor for UART
+    hostbridge_listener *listeners; // Head of listener chain
+    alt_16 channel;
+    alt_16 flags;
+
+    alt_u8 *resp_data;
+    size_t resp_len;
+    size_t resp_offset;
+
+    alt_u8 req_buffer[REQUEST_BUFFER_LENGTH];
+    size_t req_len;
+    size_t req_offset;
+
+} state;
+
+void peridot_sw_hostbridge_gen2_init(void)
+{
+    state.fd = open(PERIDOT_SW_HOSTBRIDGE_GEN2_PIPE, O_RDWR | O_NONBLOCK);
+    state.listeners = NULL;
+    state.channel = -1;
+}
+
+int peridot_sw_hostbridge_gen2_add_listener(hostbridge_listener *listener)
+{
+    hostbridge_listener **prev = &state.listeners;
+    for (;;) {
+        hostbridge_listener *next = *prev;
+        if (!next) {
+            *prev = listener;
+            listener->flags = 0;
+            break;
+        } else if (next->channel == listener->channel) {
+            return -EEXIST;
+        }
+        prev = &next->next;
+    }
+    return 0;
+}
+
+static hostbridge_listener *get_current_listener(void)
+{
+    hostbridge_listener *listener;
+
+    if (state.channel < 0) {
+        return NULL;
+    }
+    for (listener = state.listeners; listener; listener = listener->next) {
+        if (listener->channel == state.channel) {
+            return listener;
+        }
+    }
+    return NULL;
+}
+
+int peridot_sw_hostbridge_gen2_service(void)
+{
+    hostbridge_listener *listener;
+    int transfer_offset;
+
+    // Send response
+    if (state.resp_data) {
+        int sent = write(
+            state.fd,
+            state.resp_data + state.resp_offset,
+            state.resp_len - state.resp_offset
+        );
+        if (sent > 0) {
+            state.resp_offset += sent;
+            if (state.resp_offset >= state.resp_len) {
+                free(state.resp_data);
+                state.resp_data = NULL;
+            }
+        }
+    }
+
+    // Receive request
+    if (state.req_len < REQUEST_BUFFER_LENGTH) {
+        int received = read(
+            state.fd,
+            state.req_buffer + state.req_len,
+            REQUEST_BUFFER_LENGTH - state.req_len
+        );
+        if (received > 0) {
+            state.req_len += received;
+        }
+    }
+
+receive:
+    listener = get_current_listener();
+    transfer_offset = -1;
+    while (state.req_offset < state.req_len) {
+        alt_u8 byte = state.req_buffer[state.req_offset++];
+        switch (byte) {
+        case AST_SOP:
+            if (listener) {
+                listener->flags = (listener->flags | FLAG_IN_PACKET) & ~FLAG_LAST_BYTE;
+            }
+            continue;
+        case AST_EOP:
+            if (listener) {
+                listener->flags |= FLAG_LAST_BYTE;
+            }
+            continue;
+        case AST_CHANNEL:
+            state.flags |= FLAG_CHANNEL;
+            continue;
+        case AST_ESCAPED:
+            state.flags |= FLAG_ESCAPED;
+            continue;
+        }
+        if (state.flags & FLAG_ESCAPED) {
+            state.req_buffer[--state.req_offset - 1] = (byte ^ AST_ESCAPE_XOR);
+            --state.req_len;
+            state.flags &= ~FLAG_ESCAPED;
+        }
+        if (state.flags & FLAG_CHANNEL) {
+            state.channel = byte;
+            state.flags &= ~FLAG_CHANNEL;
+            goto receive;
+        }
+    }
+}
 
 #define MIN_RECV_BUFFER_SIZE    1024
 #define MIN_RECV_SPACE          64
@@ -12,28 +157,6 @@ enum {
     FLAG_V1COMMAND  = (1<<6),
 };
 
-enum {
-    V1CMD_NCONFIG   = (1<<0),
-    V1CMD_RESPMODE  = (1<<1),
-    V1CMD_USERMODE  = (1<<3),
-    V1CMD_SCL_TCK   = (1<<4),
-    V1CMD_SDA_TMS   = (1<<5),
-    V1CMD_TDI       = (1<<6),
-    V1CMD_JTAGEN    = (1<<7),
-};
-
-enum {
-    V1RESP_MSEL1    = (1<<0),
-    V1RESP_NSTATUS  = (1<<1),
-    V1RESP_CONFDONE = (1<<2),
-    V1RESP_TIMEOUT  = (1<<3),
-    V1RESP_SCL      = (1<<4),
-    V1RESP_SDA      = (1<<5),
-    V1RESP_TDO      = (1<<6),
-};
-
-static int g_hostuart_fd;   // FD for host UART
-static alt_u8 g_last_v1cmd; // Last command byte for v1
 static alt_u8 g_flags;      // Combination of FLAG_xx
 static alt_u8 g_channel;    // Channel number
 
