@@ -22,8 +22,8 @@ add_sw_property supported_bsp_type TINYTH
 #
 # BSP settings...
 #
-add_sw_setting quoted_string system_h_define root.name RUBIC_AGENT_ROOT_NAME "/sys/rubic" "Root name of Rubic agent"
 add_sw_setting quoted_string system_h_define rubic.version RUBIC_AGENT_RUBIC_VERSION ">=0.99.1" "Supported Rubic version (semver range syntax)"
+add_sw_setting quoted_string system_h_define storage.internal RUBIC_AGENT_STORAGE_INTERNAL "/mnt" "Path of internal storage"
 add_sw_setting quoted_string system_h_define runtime1.name RUBIC_AGENT_RUNTIME1_NAME "" "Name of runtime #1"
 add_sw_setting quoted_string system_h_define runtime1.version RUBIC_AGENT_RUNTIME1_VERSION "0.0.1" "Version of runtime #1"
 add_sw_setting boolean_define_only system_h_define runtime2.present RUBIC_AGENT_RUNTIME2_PRESENT 0 "Set if this system has second runtime (runtime #2)"

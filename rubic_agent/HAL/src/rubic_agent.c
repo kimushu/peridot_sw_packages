@@ -1,246 +1,220 @@
-#include "sys/alt_dev.h"
-#include "sys/alt_llist.h"
 #include "rubic_agent.h"
 #include <pthread.h>
 #include <semaphore.h>
-#include <stdio.h>
 #include <errno.h>
-#include <sys/fcntl.h>
 #include <string.h>
 #include <malloc.h>
 #include "system.h"
+#include "bson.h"
+#include "peridot_rpc_server.h"
 
-/* Prototypes */
-static int rubic_agent_open(alt_fd *fd, const char *name, int flags, int mode);
-static int rubic_agent_close(alt_fd *fd);
-static int rubic_agent_read(alt_fd *fd, char *ptr, int len);
-static int rubic_agent_write(alt_fd *fd, const char *ptr, int len);
+static struct {
+	pthread_mutex_t mutex;
+	sem_t sem;
+	unsigned char busy;
+	unsigned char aborting;
+	const char *request;
+	void *params;
+	void (*abort_handler)(void);
+} state;
 
-static alt_dev fs_dev = {
-	ALT_LLIST_ENTRY,
-	RUBIC_AGENT_ROOT_NAME,
-	rubic_agent_open,
-	rubic_agent_close,
-	rubic_agent_read,
-	rubic_agent_write,
-	NULL, /* lseek */
-	NULL, /* fstat */
-	NULL, /* ioctl */
-};
+static void *make_runtime_info(const char *name, const char *version)
+{
+	static char runtime[64];
+	bson_create_empty_document(runtime);
+	bson_set_string(runtime, "name", name);
+	bson_set_string(runtime, "version", version);
+	return runtime;
+}
 
-static const char *info_json =
-"{"
-	"\"rubic\":\"" RUBIC_AGENT_RUBIC_VERSION "\","
-	"\"runtimes\":["
-		"{"
-			"\"name\":\"" RUBIC_AGENT_RUNTIME1_NAME "\","
-			"\"version\":\"" RUBIC_AGENT_RUNTIME1_VERSION "\""
-		"}"
+/*
+ * Query agent information
+ */
+static void *rubic_agent_method_info(const void *params)
+{
+	void *output = malloc(2048);
+	void *subdoc;
+
+	if (!output) {
+		return NULL;
+	}
+	subdoc = ((char *)output) + (2048 - 256);
+
+	bson_create_empty_document(output);
+	bson_set_string(output, "rubicVersion", RUBIC_AGENT_RUBIC_VERSION);
+
+	// Storage information
+	bson_create_empty_document(subdoc);
+	bson_set_string(subdoc, "internal", RUBIC_AGENT_STORAGE_INTERNAL);
+	bson_set_subdocument(output, "storage", subdoc);
+
+	// Runtime information
+	bson_create_empty_document(subdoc);
+	bson_set_subdocument(subdoc, "0", make_runtime_info(RUBIC_AGENT_RUNTIME1_NAME, RUBIC_AGENT_RUNTIME1_VERSION));
 #ifdef RUBIC_AGENT_RUNTIME2_PRESENT
-		",{"
-			"\"name\":\"" RUBIC_AGENT_RUNTIME2_NAME "\","
-			"\"version\":\"" RUBIC_AGENT_RUNTIME2_VERSION "\""
-		"}"
-#endif
+	bson_set_subdocument(subdoc, "1", make_runtime_info(RUBIC_AGENT_RUNTIME2_NAME, RUBIC_AGENT_RUNTIME2_VERSION));
 #ifdef RUBIC_AGENT_RUNTIME3_PRESENT
-		",{"
-			"\"name\":\"" RUBIC_AGENT_RUNTIME3_NAME "\","
-			"\"version\":\"" RUBIC_AGENT_RUNTIME3_VERSION "\""
-		"}"
+	bson_set_subdocument(subdoc, "2", make_runtime_info(RUBIC_AGENT_RUNTIME3_NAME, RUBIC_AGENT_RUNTIME3_VERSION));
 #endif
-	"]"
-"}";
+#endif
+	bson_set_array(output, "runtimes", subdoc);
 
-static void (*intr_handler)(int reason);
-static char *current_program;
-static sem_t sem_start;
+	return output;
+}
 
-#define FORMAT_PROGRAM ((const char *)1)
+/*
+ * Run program
+ */
+static void *new_request(const char *request, const void *params)
+{
+	int params_len;
+	int off_target;
+	if (bson_get_props(params, "target", &off_target, NULL) < 1) {
+		errno = JSONRPC_ERR_INVALID_PARAMS;
+		return NULL;
+	}
+
+	pthread_mutex_lock(&state.mutex);
+	if (state.request) {
+		pthread_mutex_unlock(&state.mutex);
+		errno = EBUSY;
+		return NULL;
+	}
+
+	params_len = bson_measure_document(params);
+	state.params = malloc(params_len);
+	if (!state.params) {
+		pthread_mutex_unlock(&state.mutex);
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	state.request = request;
+	state.aborting = 0;
+	memcpy(state.params, params, params_len);
+	pthread_mutex_unlock(&state.mutex);
+
+	sem_post(&state.sem);
+	errno = 0;
+	return NULL;
+}
+
+/*
+ * Start program
+ */
+static void *rubic_agent_method_start(const void *params)
+{
+	return new_request("start", params);
+}
+
+/*
+ * Format storage
+ */
+static void *rubic_agent_method_format(const void *params)
+{
+	return new_request("format", params);
+}
+
+/*
+ * Abort program
+ */
+static void *rubic_agent_method_abort(const void *params)
+{
+	pthread_mutex_lock(&state.mutex);
+	if (state.request) {
+		if (!state.aborting) {
+			state.aborting = 1;
+			if (state.abort_handler) {
+				(*state.abort_handler)();
+			}
+		}
+	}
+	pthread_mutex_unlock(&state.mutex);
+	errno = 0;
+	return NULL;
+}
+
+/*
+ * Query program status
+ */
+static void *rubic_agent_method_status(const void *params)
+{
+	void *output = malloc(64);
+	if (!output) {
+		return NULL;
+	}
+
+	pthread_mutex_lock(&state.mutex);
+	bson_create_empty_document(output);
+	if (state.request) {
+		bson_set_string(output, "request", state.request);
+	}
+	bson_set_boolean(output, "busy", state.busy);
+	pthread_mutex_unlock(&state.mutex);
+
+	return output;
+}
 
 /*
  * Start Rubic agent
  */
 void rubic_agent_init(void)
 {
-	alt_fs_reg(&fs_dev);
-	intr_handler = NULL;
-	current_program = NULL;
-	sem_init(&sem_start, 0, 0 /* TODO: auto start */);
+	peridot_rpc_server_register_method("rubic.info", rubic_agent_method_info);
+	peridot_rpc_server_register_method("rubic.start", rubic_agent_method_start);
+	peridot_rpc_server_register_method("rubic.format", rubic_agent_method_format);
+	peridot_rpc_server_register_method("rubic.abort", rubic_agent_method_abort);
+	peridot_rpc_server_register_method("rubic.status", rubic_agent_method_status);
 }
 
-/*
- * Set handler for interrupt program
- * (Notice: handler may be called from another thread)
+/**
+ * Wait request
  */
-void rubic_agent_set_interrupt_handler(void (*handler)(int reason))
+const void *rubic_agent_wait_request(const char **request, void (*abort_handler)(void))
 {
-	intr_handler = handler;
-}
+	const void *params;
+	state.abort_handler = NULL;
 
-/*
- * Wait for request
- * (This function will block a caller thread until receive request)
- */
-void rubic_agent_wait_request(rubic_agent_message *msg)
-{
-	while (!current_program) {
-		sem_wait(&sem_start);
-	}
-	if (current_program == FORMAT_PROGRAM) {
-		msg->request = RUBIC_AGENT_REQUEST_FORMAT;
-	} else {
-		msg->request = RUBIC_AGENT_REQUEST_START;
-		msg->body.start.program = current_program;
-	}
-}
-
-/*
- * Send response
- */
-void rubic_agent_send_response(rubic_agent_message *msg)
-{
-	char *old_program = current_program;
-	current_program = NULL;
-	if (old_program != FORMAT_PROGRAM) {
-		free(old_program);
-	}
-}
-
-/* Handler for open() */
-static int rubic_agent_open(alt_fd *fd, const char *name, int flags, int mode)
-{
-	int request = -1;
-	rubic_agent_fddata *data;
-	int is_write = (((flags & O_ACCMODE) + 1) & _FWRITE);
-
-	name += strlen(fs_dev.name) + 1;
-	if (strcmp(name, "info") == 0) {
-		request = RUBIC_AGENT_FILE_INFO;
-		if (is_write) {
-			// Not writable
-			return -EACCES;
-		}
-	} else if (strcmp(name, "run") == 0) {
-		request = RUBIC_AGENT_FILE_RUN;
-		if (is_write && current_program) {
-			// Not writable when program is running
-			return -EBUSY;
-		}
-	} else if (strcmp(name, "stop") == 0) {
-		request = RUBIC_AGENT_FILE_STOP;
-	} else if (strcmp(name, "format") == 0) {
-		request = RUBIC_AGENT_FILE_FORMAT;
-		if (is_write && current_program) {
-			// Not writable when program is running
-			return -EBUSY;
-		}
-	}
-
-	if (request < 0) {
-		return -ENOENT;
-	}
-
-	data = (rubic_agent_fddata *)malloc(sizeof(*data) + FILENAME_MAX);
-	if (!data) {
-		return -ENOMEM;
-	}
-	data->file = request;
-	data->buf_ptr = 0;
-	data->buf_max = FILENAME_MAX;
-	data->buf[0] = '\0';
-	fd->priv = (alt_u8 *)data;
-
-	switch (data->file) {
-	case RUBIC_AGENT_FILE_INFO:
-		strncpy(data->buf, info_json, data->buf_max);
-		break;
-	case RUBIC_AGENT_FILE_RUN:
-		// Return current program name
-		if (current_program && current_program != FORMAT_PROGRAM) {
-			strncpy(data->buf, current_program, data->buf_max);
-		}
-		break;
-	case RUBIC_AGENT_FILE_STOP:
-		// No initial data
-		break;
-	case RUBIC_AGENT_FILE_FORMAT:
-		// Return format is running (1:running)
-		strncpy(data->buf, (current_program == FORMAT_PROGRAM) ? "1" : "0", data->buf_max);
-		break;
-	}
-	data->buf_len = strnlen(data->buf, data->buf_max - 1) + 1;
-	return 0;
-}
-
-/*
- * Handler for close()
- */
-static int rubic_agent_close(alt_fd *fd)
-{
-	rubic_agent_fddata *data = (rubic_agent_fddata *)fd->priv;
-
-	if (!(((fd->fd_flags & O_ACCMODE) + 1) & _FWRITE)) {
-		goto cleanup;
-	}
-
-	// When writing end
-	switch (data->file) {
-	case RUBIC_AGENT_FILE_RUN:
-		if (current_program) {
-			// FIXME
+	for (;;) {
+		sem_wait(&state.sem);
+		pthread_mutex_lock(&state.mutex);
+		if (state.request) {
 			break;
 		}
-		current_program = strndup(data->buf, data->buf_len);
-		sem_post(&sem_start);
-		break;
-	case RUBIC_AGENT_FILE_STOP:
-		if (intr_handler) {
-			intr_handler(0 /* TODO: reason */);
-		}
-		break;
-	case RUBIC_AGENT_FILE_FORMAT:
-		if (current_program) {
-			// FIXME
-			break;
-		}
-		current_program = FORMAT_PROGRAM;
-		sem_post(&sem_start);
-		break;
+		pthread_mutex_unlock(&state.mutex);
 	}
+	// mutex still locked
 
-cleanup:
-	fd->priv = NULL;
-	free(data);
-	return 0;
+	*request = state.request;
+	state.busy = 1;
+	state.abort_handler = abort_handler;
+	params = state.params;
+	pthread_mutex_unlock(&state.mutex);
+
+	return params;
 }
 
-static int rubic_agent_read(alt_fd *fd, char *ptr, int len)
+/**
+ * Check aborting
+ */
+int rubic_agent_is_aborting(void)
 {
-	rubic_agent_fddata *data = (rubic_agent_fddata *)fd->priv;
-	int read_len = data->buf_len - data->buf_ptr;
-	if (len < read_len) {
-		read_len = len;
-	}
-	if (read_len > 0) {
-		memcpy(ptr, data->buf + data->buf_ptr, read_len);
-		data->buf_ptr += read_len;
-	}
-	return read_len;
+	return (state.aborting != 0);
 }
 
-static int rubic_agent_write(alt_fd *fd, const char *ptr, int len)
+/**
+ * Finish request
+ */
+void rubic_agent_finish_request(void)
 {
-	rubic_agent_fddata *data = (rubic_agent_fddata *)fd->priv;
-	int write_len = data->buf_max - data->buf_ptr;
-	if (len < write_len) {
-		write_len = len;
+	pthread_mutex_lock(&state.mutex);
+	if (state.request) {
+		state.request = NULL;
+		state.busy = 0;
+		state.aborting = 0;
+		free(state.params);
+		state.params = NULL;
+		state.abort_handler = NULL;
 	}
-	if (write_len > 0) {
-		memcpy(data->buf + data->buf_ptr, ptr, write_len);
-		data->buf_ptr += write_len;
-	} else if (len > 0) {
-		return -ENOSPC;
-	}
-	data->buf_len = data->buf_ptr;
-	return write_len;
+	pthread_mutex_unlock(&state.mutex);
 }
