@@ -24,7 +24,7 @@ static void write_unaligned_int(void *ptr, int len)
 static int measure_value(char type, const char *data, const char *end)
 {
 	const char *start = data;
-	int len;
+	int len = 0;
 
 	switch (type) {
 	case 0x01:	// 64-bit floating point

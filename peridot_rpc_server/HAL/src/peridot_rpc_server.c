@@ -7,9 +7,7 @@
 #include <stdlib.h>
 #include "sys/alt_cache.h"
 #include "peridot_rpc_server.h"
-#include "peridot_swi.h"
-#include "bson.h"
-
+#include "peridot_sw_hostbridge_gen2.h"
 #if (PERIDOT_RPCSRV_WORKER_THREADS) > 0
 # define PERIDOT_RPCSRV_MULTI_THREAD
 # include <pthread.h>
@@ -17,77 +15,40 @@
 #else
 # undef PERIDOT_RPCSRV_MULTI_THREAD
 #endif
+#include "bson.h"
 
-#ifdef PERIDOT_RPCSRV_ENABLE_ISOLATION
-# define ISOLATED __attribute__((section(PERIDOT_RPCSRV_ISOLATED_SECTION)))
-#else
-# define ISOLATED
-#endif
+typedef struct rpcsrv_job_s {
+    struct rpcsrv_job_s *next;
+    union {
+        alt_u8 bytes[0];
+        alt_u32 words[0];
+    } data;
+} rpcsrv_job;
 
-#if (NIOS2_DCACHE_LINE_SIZE) > 0
-# define ALIGNED __attribute__((aligned(NIOS2_DCACHE_LINE_SIZE)))
-#else
-# define ALIGNED
-#endif
-
-// Macro for generating uncached data pointer (using bypass-cache bit)
-#define UCPTR(p) ((typeof(p))((uintptr_t)(p) | (1u<<31)))
-
-// Public RPC server information
-ISOLATED ALIGNED static peridot_rpc_server_info pub_srvInfo;
-
-// Public RPC request/response buffer
-ISOLATED ALIGNED static char pub_reqBuf[(PERIDOT_RPCSRV_REQUEST_LENGTH)];
-ISOLATED ALIGNED static char pub_resBuf[(PERIDOT_RPCSRV_RESPONSE_LENGTH)];
-
-// Server status
-static volatile int srv_running;
-
-// Cached HostID
-static alt_u32 cached_host_id[2];
-
-// Startup callback
 static struct {
-	peridot_rpc_server_callback *first, *last;
-} cb_startup;
-
-// Buffer pointers
-static peridot_rpc_server_buffer reqBuf;
-static peridot_rpc_server_buffer resBuf;
-
+	hostbridge_channel channel;
+    alt_u8 escape_prefix;
+    alt_u8 eop_prefix;
+    alt_u8 inside_packet;
+	size_t offset;
+	union {
+		alt_u8 bytes[4];
+		alt_32 value;
+	} length;
+    rpcsrv_job *incoming_job;
+    rpcsrv_job *volatile pending_job;
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
-// Mutex for locking buffer operations
-static pthread_mutex_t buf_mutex;
-
-// Semaphore for notifying IRQ
-static sem_t irq_sem;
-#else
-// Flag for notifying IRQ
-static volatile int irq_sem;
+    sem_t sem;
 #endif
-
-// Registered method list
-static peridot_rpc_server_method_entry *method_first, *method_last;
-
-/*
- * Handler for software interrupt from client
- */
-static void peridot_rpc_server_handler(void *param)
-{
-	(void)param;	// unused
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
-	sem_post(&irq_sem);
-#else
-	irq_sem = 1;
-#endif
-}
+    peridot_rpc_server_method_entry *method_first, *method_last;
+} state;
 
 /*
  * Find method entry
  */
 static peridot_rpc_server_method_entry *peridot_rpc_server_find_method(const char *name)
 {
-	peridot_rpc_server_method_entry *entry = method_first;
+	peridot_rpc_server_method_entry *entry = state.method_first;
 
 	for (; entry; entry = entry->next) {
 		if (strcmp(entry->name, name) == 0) {
@@ -98,219 +59,79 @@ static peridot_rpc_server_method_entry *peridot_rpc_server_find_method(const cha
 	return NULL;
 }
 
-/*
- * Stop server
+/**
+ * @func peridot_rpc_server_sink
+ * @brief Stream sink function for RPC server
  */
-static void peridot_rpc_server_stop(void)
+static int peridot_rpc_server_sink(hostbridge_channel *channel, const void *ptr, int len)
 {
-	srv_running = 0;
-	peridot_swi_write_message(0);
+    const alt_u8 *src = (const alt_u8 *)ptr;
+    int read_len = 0;
 
-	// TODO: cleanup method list
-}
-
-/*
- * Process one request
- */
-static int peridot_rpc_server_process_request(void)
-{
-	const void *input;
-	void *output;
-
-	alt_u32 host_id[2];
-	alt_u32 len;
-	int off_jsonrpc;
-	int off_method;
-	peridot_rpc_server_method_entry *method;
-	int off_params;
-	int off_id = -1;
-	char *result = NULL;
-	int result_errno = 0;
-
-	for (;;) {
-		if (!srv_running) {
-			return -1;
-		}
-
+    while ((read_len < len) && (!state.pending_job)) {
+        alt_u8 byte = *src++;
+        ++read_len;
+        switch (byte) {
+        case AST_SOP:
+            state.offset = 0;
+            state.inside_packet = 1;
+            continue;
+        case AST_EOP_PREFIX:
+            state.eop_prefix = 1;
+            continue;
+        case AST_ESCAPE_PREFIX:
+            state.escape_prefix = 1;
+            continue;
+        }
+        if (state.escape_prefix) {
+            byte ^= AST_ESCAPE_XOR;
+            state.escape_prefix = 0;
+        }
+        if (!state.inside_packet) {
+            continue;
+        }
+        if (state.offset < 4) {
+            state.length.bytes[state.offset++] = byte;
+            if (state.offset == 4) {
+                if (state.length.value <= PERIDOT_RPCSRV_MAX_REQUEST_LENGTH) {
+                    // Allocate buffer
+                    state.incoming_job = (rpcsrv_job *)malloc(sizeof(rpcsrv_job) + state.length.value);
+                    if (state.incoming_job) {
+                        // Copy length
+                        state.incoming_job->next = NULL;
+                        state.incoming_job->data.words[0] = state.length.value;
+                    }
+                }
+            }
+        } else if (state.offset >= state.length.value) {
+            // Packet data too large
+drop_packet:
+            free(state.incoming_job);
+next_packet:
+            state.incoming_job = NULL;
+            state.offset = 0;
+            state.eop_prefix = 0;
+            state.inside_packet = 0;
+            continue;
+        } else if (state.incoming_job) {
+            state.incoming_job->data.bytes[state.offset++] = byte;
+        }
+        if (!state.eop_prefix) {
+            continue;
+        }
+        if (state.offset != state.length.value) {
+            // Invalid packet size => drop packet
+            goto drop_packet;
+        }
+        state.pending_job = state.incoming_job;
+        state.incoming_job = NULL;
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
-		pthread_mutex_lock(&buf_mutex);
+        sem_post(&state.sem);
 #endif
-		len = *UCPTR((alt_u32 *)reqBuf.ptr);
-		if (len != 0) {
-			break;
-		}
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
-		pthread_mutex_unlock(&buf_mutex);
-		sem_wait(&irq_sem);
-#else
-		if (!irq_sem) {
-			return 0;
-		}
-#endif
-	}
+        goto next_packet;
+    }
 
-	// still in critical section
-
-	host_id[0] = *UCPTR(&pub_srvInfo.host_id[0]);
-	host_id[1] = *UCPTR(&pub_srvInfo.host_id[1]);
-
-	if (len > reqBuf.len) {
-		// Too large
-		input = NULL;
-		result_errno = EBADMSG;
-	} else {
-		input = malloc(len);
-		if (!input) {
-			result_errno = ENOMEM;
-		}
-	}
-
-	if (input) {
-		// Copy input data to private memory
-		memcpy((void *)input, UCPTR(reqBuf.ptr), (len < reqBuf.len) ? len : reqBuf.len);
-	}
-
-	// Now, public buffer can be reused for new request
-	*UCPTR(&pub_srvInfo.request.len) = reqBuf.len;
-	*UCPTR(&pub_srvInfo.request.ptr) = reqBuf.ptr;
-	*UCPTR((alt_u32 *)reqBuf.ptr) = 0;
-
-	if ((host_id[0] != cached_host_id[0]) || (host_id[1] != cached_host_id[1])) {
-		peridot_rpc_server_callback *cb;
-
-		cached_host_id[0] = host_id[0];
-		cached_host_id[1] = host_id[1];
-
-		// Invoke startup callbacks
-		for (cb = cb_startup.first; cb; cb = cb->next) {
-			(*cb->func)();
-		}
-	}
-
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
-	pthread_mutex_unlock(&buf_mutex);
-#endif
-
-	// End of critical section
-
-	if (!input) {
-		// No memory / too large
-		goto send_response;
-	}
-
-	if (bson_get_props(input,
-		"jsonrpc", &off_jsonrpc,
-		"method", &off_method,
-		"params", &off_params,
-		"id", &off_id,
-		NULL) <= 0) {
-		// Invalid input
-		result_errno = EINVAL;
-		goto send_response;
-	}
-
-	if (strcmp(bson_get_string(input, off_jsonrpc, ""), PERIDOT_RPCSRV_JSONRPC_VER) != 0) {
-		// Unsupported JSON-RPC version
-		result_errno = EINVAL;
-		goto send_response;
-	}
-
-	method = peridot_rpc_server_find_method(bson_get_string(input, off_method, NULL));
-	if (!method) {
-		// Method is not found
-		result_errno = ENOSYS;
-		goto send_response;
-	}
-
-	len = bson_empty_size;
-	len += bson_measure_string("jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
-	len += bson_measure_null("result");
-	len += bson_measure_element("id", input, off_id);
-	// len == (minimum response size with result=null)
-
-	errno = 0;
-	result = (*method->func)(
-			bson_get_subdocument((void *)input, off_params, (void *)bson_empty_document),
-			resBuf.len - len);
-	result_errno = errno;
-
-send_response:
-	if ((result_errno == 0) && result) {
-		int doclen;
-		doclen = bson_measure_document(result);
-		if ((len + doclen) > resBuf.len) {
-			result_errno = JSONRPC_ERR_INTERNAL_ERROR;
-		} else {
-			len += doclen;
-		}
-	}
-	if (result_errno != 0) {
-		len += 32;
-		// Now len > (minimum response size with error:{code:number})
-	}
-	output = malloc(len);
-	if (!output) {
-		// Critical fault!! (cannot allocate response memory)
-		// TODO:
-		return -2;
-	}
-	memcpy(output, &bson_empty_document, bson_empty_size);
-	bson_set_string(output, "jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
-	if (result_errno == 0) {
-		if (result) {
-			bson_set_subdocument(output, "result", result);
-		} else {
-			bson_set_null(output, "result");
-		}
-	} else {
-		char errobj[32];
-		memcpy(errobj, &bson_empty_document, bson_empty_size);
-		bson_set_int32(errobj, "code", result_errno);
-		bson_set_subdocument(output, "error", errobj);
-	}
-	bson_set_element(output, "id", input, off_id);
-	len = bson_measure_document(output);
-
-	free((void *)input);
-	free(result);
-
-	for (;;) {
-		int buf_len;
-
-		if (!srv_running) {
-			free(output);
-			return -1;
-		}
-
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
-		pthread_mutex_lock(&buf_mutex);
-#endif
-		buf_len = *UCPTR((alt_u32 *)resBuf.ptr);
-		if (buf_len == 0) {
-			break;
-		}
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
-		pthread_mutex_unlock(&buf_mutex);
-		sem_wait(&irq_sem);
-#else
-		while (!irq_sem);
-#endif
-	}
-
-	// still in critical section
-
-	// Write response
-	memcpy(UCPTR((alt_u32 *)resBuf.ptr + 1), (alt_u32 *)output + 1, len - 4);
-	*UCPTR((alt_u32 *)resBuf.ptr) = *(alt_u32 *)output;
-
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
-	pthread_mutex_unlock(&buf_mutex);
-#endif
-
-	// End of critical section
-
-	free(output);
-	return 1;
+    return read_len;
 }
 
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
@@ -319,110 +140,172 @@ send_response:
  */
 static void *peridot_rpc_server_worker(void *param)
 {
-	(void)param;	// unused
-	while (peridot_rpc_server_process_request() >= 0);
-	return NULL;
+    (void)param;
+    for (;;) {
+        peridot_rpc_server_service();
+    }
+    return NULL;
 }
 #endif  /* PERIDOT_RPCSRV_MULTI_THREAD */
 
 /*
  * Initialize RPC server
  */
-void peridot_rpc_server_init(void)
+int peridot_rpc_server_init(void)
 {
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
 	int i;
 #endif
 
-	peridot_rpc_server_stop();
+	// Register packetized stream channel
+	state.channel.dest.sink = peridot_rpc_server_sink;
+	state.channel.number = PERIDOT_RPCSRV_CHANNEL;
+	state.channel.packetized = 1;
+	state.channel.use_fd = 0;
+	peridot_sw_hostbridge_gen2_register_channel(&state.channel);
 
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
-	pthread_mutex_init(&buf_mutex, NULL);
-	sem_init(&irq_sem, 0, 0);
-#else
-	irq_sem = 0;
-#endif
-
-	// Initialize buffer
-	reqBuf.ptr = pub_reqBuf;
-	reqBuf.len = sizeof(pub_reqBuf);
-	*UCPTR((alt_u32 *)reqBuf.ptr) = 0;
-	resBuf.ptr = pub_resBuf;
-	resBuf.len = sizeof(pub_resBuf);
-	*UCPTR((alt_u32 *)resBuf.ptr) = 0;
-
-	// Initialize server information
-	pub_srvInfo.if_ver = PERIDOT_RPCSRV_IF_VERSION;
-	pub_srvInfo.reserved = 0;
-	pub_srvInfo.host_id[0] = 0;
-	pub_srvInfo.host_id[1] = 0;
-	pub_srvInfo.request.len = reqBuf.len;
-	pub_srvInfo.request.ptr = reqBuf.ptr;
-	pub_srvInfo.response.len = resBuf.len;
-	pub_srvInfo.response.ptr = resBuf.ptr;
-	alt_dcache_flush(&pub_srvInfo, sizeof(pub_srvInfo));
-
-	// Publish server information
-	peridot_swi_set_handler(peridot_rpc_server_handler, NULL);
-	peridot_swi_write_message((alt_u32)&pub_srvInfo);
-
-	atexit(peridot_rpc_server_stop);
-
-	srv_running = 1;
-	cached_host_id[0] = 0;
-	cached_host_id[1] = 0;
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+	sem_init(&state.sem, 0, 0);
 	for (i = 0; i < (PERIDOT_RPCSRV_WORKER_THREADS); ++i) {
-		pthread_t tid;
-		pthread_create(&tid, NULL, peridot_rpc_server_worker, NULL);
-		// tid is not used
+        pthread_t tid;
+        int result;
+		result = pthread_create(&tid, NULL, peridot_rpc_server_worker, NULL);
+        (void)tid;
+        if (result != 0) {
+            return -result;
+        }
 	}
 #endif
+
+    return 0;
 }
 
 /*
  * Register function as RPC-callable
  */
-void peridot_rpc_server_register_method(const char *name, peridot_rpc_server_function func)
+int peridot_rpc_server_register_method(const char *name, peridot_rpc_server_function func)
 {
 	peridot_rpc_server_method_entry *entry;
 	entry = malloc(sizeof(*entry) + strlen(name) + 1);
 	if (!entry) {
-		// TODO:
-		return;
+		return -ENOMEM;
 	}
 	entry->next = NULL;
 	entry->func = func;
 	strcpy(entry->name, name);
-	if (method_last) {
-		method_last->next = entry;
+	if (state.method_last) {
+		state.method_last->next = entry;
 	} else {
-		method_first = entry;
+		state.method_first = entry;
 	}
-	method_last = entry;
+    state.method_last = entry;
+    return 0;
 }
 
-/*
- * Register startup (new host) callback
+/**
+ * @func peridot_rpc_server_service
+ * @brief Execute server service
  */
-void peridot_rpc_server_register_startup(peridot_rpc_server_callback *callback)
+int peridot_rpc_server_service(void)
 {
-	callback->next = NULL;
-	if (cb_startup.first) {
-		cb_startup.last->next = callback;
-	} else {
-		cb_startup.first = callback;
-	}
-	cb_startup.last = callback;
-}
+    void *input;
+    int off_jsonrpc, off_method, off_params, off_id;
+    int result_errno;
+    const char *method;
+    peridot_rpc_server_method_entry *entry;
+    void *result = NULL;
+    alt_u8 error_doc[16];
+    void *output;
+    int reply_len;
 
-/*
- * Process RPC requests (for non-multi-threading configurations)
- */
-void peridot_rpc_server_process(void)
-{
-#ifndef PERIDOT_RPCSRV_MULTI_THREAD
-	peridot_rpc_server_process_request();
+#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+    sem_wait(&state.sem);
 #endif
-}
+    rpcsrv_job *job = state.pending_job;
+    state.pending_job = NULL;
+    if (!job) {
+        // No job
+        return 0;
+    }
 
+    // TODO: support batch request
+
+    input = &job->data;
+    result_errno = 0;
+
+    if (bson_get_props(input,
+        "jsonrpc", &off_jsonrpc,
+        "method", &off_method,
+        "params", &off_params,
+        "id", &off_id,
+        NULL) <= 0) {
+        result_errno = JSONRPC_ERR_PARSE_ERROR;
+        goto reply;
+    }
+
+    if ((strcmp(bson_get_string(input, off_jsonrpc, ""), PERIDOT_RPCSRV_JSONRPC_VER) != 0) ||
+        ((method = bson_get_string(input, off_method, NULL)) == NULL)) {
+        result_errno = JSONRPC_ERR_INVALID_REQUEST;
+        goto reply;
+    }
+
+    entry = peridot_rpc_server_find_method(method);
+    if (!entry) {
+        result_errno = JSONRPC_ERR_METHOD_NOT_FOUND;
+        goto reply;
+    }
+
+    result = (*entry->func)(bson_get_subdocument(input, off_params, (void *)bson_empty_document));
+    if (off_id < 0) {
+        // Notification => Do not reply (even if error occurs)
+        free(result);
+        return 0;
+    }
+    result_errno = result ? 0 : errno;
+
+reply:
+    reply_len = bson_empty_size;
+    reply_len += bson_measure_string("jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
+    reply_len += bson_measure_element("id", input, off_id);
+    if (result_errno == 0) {
+        // Success
+        if (result) {
+            reply_len += bson_measure_subdocument("result", result);
+        } else {
+            reply_len += bson_measure_null("result");
+        }
+    } else {
+        // Fail
+        memcpy(error_doc, &bson_empty_document, bson_empty_size);
+        bson_set_int32(error_doc, "code", result_errno);
+        reply_len += bson_measure_subdocument("error", error_doc);
+    }
+    output = malloc(reply_len);
+    if (!output) {
+        if (result_errno != 0) {
+            // FIXME: Double error => Ignore this packet
+            return 0;
+        }
+        result_errno = JSONRPC_ERR_INTERNAL_ERROR;
+        free(result);
+        result = NULL;
+        goto reply;
+    }
+
+    memcpy(output, &bson_empty_document, bson_empty_size);
+    bson_set_string(output, "jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
+    bson_set_element(output, "id", input, off_id);
+    if (result_errno == 0) {
+        if (result) {
+            bson_set_subdocument(output, "result", result);
+            free(result);
+        } else {
+            bson_set_null(output, "result");
+        }
+    } else {
+        bson_set_subdocument(output, "error", error_doc);
+    }
+    peridot_sw_hostbridge_gen2_source(&state.channel, output, reply_len, 1);
+    free(output);
+    return 0;
+}

@@ -27,10 +27,8 @@ add_sw_property supported_bsp_type HAL
 #
 # BSP settings...
 #
-add_sw_setting decimal_number system_h_define request_length PERIDOT_RPCSRV_REQUEST_LENGTH 1024 "Byte length of request data"
-add_sw_setting decimal_number system_h_define response_length PERIDOT_RPCSRV_RESPONSE_LENGTH 1024 "Byte length of response data"
+add_sw_setting decimal_number system_h_define channel PERIDOT_RPCSRV_CHANNEL 1 "Channel number for RPC server"
+add_sw_setting decimal_number system_h_define request_length PERIDOT_RPCSRV_MAX_REQUEST_LENGTH 8192 "Maximum byte length of request data"
 add_sw_setting decimal_number system_h_define worker_threads PERIDOT_RPCSRV_WORKER_THREADS 0 "Number of worker threads for processing requests. When non-zero value is specified, multi-threading (pthread) support is required."
-add_sw_setting boolean_define_only system_h_define enable_isolation PERIDOT_RPCSRV_ENABLE_ISOLATION 0 "Enable isolation of shared memory areas by locating them out of .data section."
-add_sw_setting quoted_string system_h_define isolated_section PERIDOT_RPCSRV_ISOLATED_SECTION ".public" "Section name to locate shared memory (This is valid only when enable_isolation is true)"
 
 # End of file
