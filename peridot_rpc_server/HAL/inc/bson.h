@@ -13,6 +13,7 @@ extern int bson_get_props(const void *doc, ...);
 extern const char *bson_get_string(const void *doc, int offset, const char *default_value);
 extern void *bson_get_subdocument(void *doc, int offset, void *default_value);
 extern const void *bson_get_binary(const void *doc, int offset, int *lenptr);
+extern int bson_get_boolean(const void *doc, int offset, int default_value);
 extern int bson_get_int32(const void *doc, int offset, int default_value);
 
 extern void bson_create_empty_document(void *doc);
@@ -22,6 +23,8 @@ extern int bson_set_subdocument(void *doc, const char *key, const void *sub_doc)
 extern int bson_measure_subdocument(const char *key, const void *doc);
 extern int bson_set_array(void *doc, const char *key, const void *sub_doc);
 extern int bson_measure_array(const char *key, const void *doc);
+extern int bson_set_boolean(void *doc, const char *key, int value);
+extern int bson_measure_boolean(const char *key);
 extern int bson_set_int32(void *doc, const char *key, int value);
 extern int bson_measure_int32(const char *key);
 extern int bson_set_null(void *doc, const char *key);
