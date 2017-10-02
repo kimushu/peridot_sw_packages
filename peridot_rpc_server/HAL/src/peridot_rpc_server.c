@@ -276,7 +276,7 @@ reply:
         }
     } else {
         // Fail
-        memcpy(error_doc, &bson_empty_document, bson_empty_size);
+        bson_create_empty_document(error_doc);
         bson_set_int32(error_doc, "code", result_errno);
         reply_len += bson_measure_subdocument("error", error_doc);
     }
@@ -292,7 +292,7 @@ reply:
         goto reply;
     }
 
-    memcpy(output, &bson_empty_document, bson_empty_size);
+    bson_create_empty_document(output);
     bson_set_string(output, "jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
     bson_set_element(output, "id", input, off_id);
     if (result_errno == 0) {

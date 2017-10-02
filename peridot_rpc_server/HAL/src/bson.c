@@ -339,6 +339,15 @@ type_error:
 	return default_value;
 }
 
+void bson_create_empty_document(void *doc)
+{
+	((unsigned char *)doc)[0] = 5;
+	((unsigned char *)doc)[1] = 0;
+	((unsigned char *)doc)[2] = 0;
+	((unsigned char *)doc)[3] = 0;
+	((unsigned char *)doc)[4] = 0;
+}
+
 int bson_set_string(void *doc, const char *key, const char *string)
 {
 	int keylen = strlen(key) + 1;
