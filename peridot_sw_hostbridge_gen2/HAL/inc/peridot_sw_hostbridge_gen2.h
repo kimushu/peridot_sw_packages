@@ -2,17 +2,26 @@
 #define __PERIDOT_SW_HOSTBRIDGE_GEN2_H__
 
 #include "alt_types.h"
+#include "system.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define AST_SOP             0x7a
-#define AST_EOP_PREFIX      0x7b
-#define AST_CHANNEL_PREFIX  0x7c
-#define AST_ESCAPE_PREFIX   0x7d
-#define AST_ESCAPE_XOR      0x20
+enum {
+    AST_SOP             = 0x7a,
+    AST_EOP_PREFIX      = 0x7b,
+    AST_CHANNEL_PREFIX  = 0x7c,
+    AST_ESCAPE_PREFIX   = 0x7d,
+    AST_ESCAPE_XOR      = 0x20,
+};
+
 #define AST_NEEDS_ESCAPE(x) ((AST_SOP <= (x)) && ((x) <= AST_ESCAPE_PREFIX))
+
+enum {
+    HOSTBRIDGE_GEN2_SOURCE_PACKETIZED   = (1 << 0),
+    HOSTBRIDGE_GEN2_SOURCE_RESET        = (1 << 1),
+};
 
 typedef struct hostbridge_channel_s {
     struct hostbridge_channel_s *next;
@@ -26,10 +35,12 @@ typedef struct hostbridge_channel_s {
 } hostbridge_channel;
 
 extern int peridot_sw_hostbridge_gen2_init(void);
+#ifndef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
 extern void peridot_sw_hostbridge_gen2_service(void);
+#endif
 
 extern int peridot_sw_hostbridge_gen2_register_channel(hostbridge_channel *channel);
-extern int peridot_sw_hostbridge_gen2_source(hostbridge_channel *channel, const void *ptr, int len, int packetize);
+extern int peridot_sw_hostbridge_gen2_source(hostbridge_channel *channel, const void *ptr, int len, int flags);
 
 #define PERIDOT_SW_HOSTBRIDGE_GEN2_INSTANCE(name, state) \
     extern int alt_no_storage

@@ -305,7 +305,7 @@ reply:
     } else {
         bson_set_subdocument(output, "error", error_doc);
     }
-    peridot_sw_hostbridge_gen2_source(&state.channel, output, reply_len, 1);
+    peridot_sw_hostbridge_gen2_source(&state.channel, output, reply_len, HOSTBRIDGE_GEN2_SOURCE_PACKETIZED);
     free(output);
     return 0;
 }

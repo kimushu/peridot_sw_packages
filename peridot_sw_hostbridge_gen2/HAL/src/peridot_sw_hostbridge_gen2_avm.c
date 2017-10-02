@@ -43,6 +43,7 @@ static int avm_sink(hostbridge_channel *channel, const void *ptr, int len)
     int read_len = 0;
 
     while (read_len < len) {
+        int flags = HOSTBRIDGE_GEN2_SOURCE_PACKETIZED;
         alt_u8 byte = *src++;
         ++read_len;
         switch (byte) {
@@ -77,6 +78,9 @@ static int avm_sink(hostbridge_channel *channel, const void *ptr, int len)
             case 0x14:  // Read, incrementing address
                 state.offset = AVM_OFFSET_READ;
                 break;
+            case 0x7f:  // No transaction
+                flags |= HOSTBRIDGE_GEN2_SOURCE_RESET;
+                /* no break */
             default:    // No transaction or others
                 state.offset = AVM_OFFSET_NOTR;
                 break;
@@ -89,7 +93,6 @@ static int avm_sink(hostbridge_channel *channel, const void *ptr, int len)
         state.inside_packet = 0;
         state.buffer.u8[0] ^= 0x80;
         state.buffer.u8[1] = 0x00;
-        state.buffer.u16[1] = SWAP16(0);
         switch (state.offset) {
         case AVM_OFFSET_READ:
             {
@@ -97,17 +100,19 @@ static int avm_sink(hostbridge_channel *channel, const void *ptr, int len)
                 alt_u16 size = SWAP16(state.buffer.u16[1]);
                 if ((addr < AVM_READABLE_BASE) || ((addr + size) > AVM_READABLE_END)) {
                     // Out of range (returns 1 byte zero)
-                    peridot_sw_hostbridge_gen2_source(channel, "", 1, 1);
+                    peridot_sw_hostbridge_gen2_source(channel, "", 1, flags);
                 } else {
-                    peridot_sw_hostbridge_gen2_source(channel, (const void *)addr, size, 1);
+                    peridot_sw_hostbridge_gen2_source(channel, (const void *)addr, size, flags);
                 }
             }
             break;
         case AVM_OFFSET_WRITE:
             // Write is not permitted
+            /* no break */
         default:
             // No transaction or others
-            peridot_sw_hostbridge_gen2_source(channel, &state.buffer, 4, 1);
+            state.buffer.u16[1] = SWAP16(0);
+            peridot_sw_hostbridge_gen2_source(channel, &state.buffer, 4, flags);
             break;
         }
     }

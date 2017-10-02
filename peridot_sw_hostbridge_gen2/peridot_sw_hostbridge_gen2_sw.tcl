@@ -20,4 +20,9 @@ add_sw_property include_directory inc
 
 add_sw_property supported_bsp_type HAL
 
+#
+# BSP settings...
+#
+add_sw_setting boolean_define_only system_h_define use_receiver_thread PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD 0 "Use receiver thread in multi-thread system."
+
 # End of file

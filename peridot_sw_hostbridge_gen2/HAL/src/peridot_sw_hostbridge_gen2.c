@@ -21,6 +21,7 @@
 #define WRITE_BUFFER_LEN    128
 
 #ifdef __tinythreads__
+# include <pthread.h>
 # include <sched.h>
 # define YIELD()    sched_yield()
 #else
@@ -45,21 +46,6 @@ ALT_DRIVER_WRITE_EXTERNS(PERIDOT_SW_HOSTBRIDGE_PORT);
 #endif
 
 extern int peridot_sw_hostbridge_gen2_avm_init(void);
-
-/**
- * @func peridot_sw_hostbridge_gen2_init
- * @brief Initialize software-based hostbridge (Gen2)
- * @note This function will be called from alt_sys_init
- */
-int peridot_sw_hostbridge_gen2_init(void)
-{
-#ifndef ALT_USE_DIRECT_DRIVERS
-    state.fd = open(PERIDOT_SW_HOSTBRIDGE_PATH, O_RDWR | O_NONBLOCK);
-#endif
-    state.source_channel_number = -1;
-    ALT_SEM_CREATE(&state.lock, 1);
-    return peridot_sw_hostbridge_gen2_avm_init();
-}
 
 /**
  * @func find_channel
@@ -113,6 +99,9 @@ static void write_to_channel(hostbridge_channel *channel, const alt_u8 *buffer, 
     }
 }
 
+#ifdef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
+static
+#endif
 /**
  * @func peridot_sw_hostbridge_gen2_service
  * @brief Process I/O with software-based hostbridge (Gen2)
@@ -176,6 +165,47 @@ void peridot_sw_hostbridge_gen2_service(void)
     write_to_channel(state.sink_channel, buffer, head, read_len);
 }
 
+#ifdef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
+static void *peridot_sw_hostbridge_gen2_worker(void *param)
+{
+    (void)param;
+    for (;;) {
+        peridot_sw_hostbridge_gen2_service();
+    }
+    return NULL;
+}
+#endif  /* PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD */
+
+/**
+ * @func peridot_sw_hostbridge_gen2_init
+ * @brief Initialize software-based hostbridge (Gen2)
+ * @note This function will be called from alt_sys_init
+ */
+int peridot_sw_hostbridge_gen2_init(void)
+{
+    int result;
+#ifdef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
+    pthread_t tid;
+#endif
+#ifndef ALT_USE_DIRECT_DRIVERS
+    state.fd = open(PERIDOT_SW_HOSTBRIDGE_PATH, O_RDWR
+# ifndef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
+         | O_NONBLOCK
+# endif /* !PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD */
+    );
+#endif  /* !ALT_USE_DIRECT_DRIVERS */
+    state.source_channel_number = -1;
+    ALT_SEM_CREATE(&state.lock, 1);
+    result = peridot_sw_hostbridge_gen2_avm_init();
+    if (result != 0) {
+        return result;
+    }
+#ifdef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
+    result = -pthread_create(&tid, NULL, peridot_sw_hostbridge_gen2_worker, NULL);
+#endif
+    return result;
+}
+
 /**
  * @func peridot_sw_hostbridge_gen2_register_channel
  * @brief Register channel
@@ -226,11 +256,12 @@ static void write_to_host(const void *ptr, int len)
  * @param ptr Pointer to buffer
  * @param len Length of buffer
  */
-int peridot_sw_hostbridge_gen2_source(hostbridge_channel *channel, const void *ptr, int len, int packetize)
+int peridot_sw_hostbridge_gen2_source(hostbridge_channel *channel, const void *ptr, int len, int flags)
 {
+    int packetize = (flags & HOSTBRIDGE_GEN2_SOURCE_PACKETIZED) ? 1 : 0;
     ALT_SEM_PEND(state.lock, 0);
 
-    if (channel->number != state.source_channel_number) {
+    if ((channel->number != state.source_channel_number) || (flags & HOSTBRIDGE_GEN2_SOURCE_RESET)) {
         alt_u8 buffer[3];
         alt_u8 byte = channel->number;
         int write_len;
@@ -253,9 +284,6 @@ int peridot_sw_hostbridge_gen2_source(hostbridge_channel *channel, const void *p
     } else {
         alt_u8 buffer[WRITE_BUFFER_LEN + 2];
         const alt_u8 *src = (const alt_u8 *)ptr;
-        if (packetize) {
-            packetize = 1;
-        }
         while (len > 0) {
             int write_len = 0;
             if (packetize > 0) {
