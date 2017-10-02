@@ -109,7 +109,7 @@ static int peridot_client_fs_validate_path(const char *path, int flags)
  *   fd: <int32>     // file descriptor
  * }
  */
-static void *peridot_client_fs_open(const void *params, int max_result_len)
+static void *peridot_client_fs_open(const void *params)
 {
 	int off_path;
 	int off_flags;
@@ -151,10 +151,6 @@ static void *peridot_client_fs_open(const void *params, int max_result_len)
 	}
 
 	result_len = bson_empty_size + bson_measure_int32("fd");
-	if (result_len > max_result_len) {
-		errno = JSONRPC_ERR_INTERNAL_ERROR;
-		return NULL;
-	}
 	result = malloc(result_len);
 	if (!result) {
 		errno = ENOMEM;
@@ -232,7 +228,7 @@ static int peridot_client_fs_get_fd(const void *params, int off_vfd, int *vfd_pt
  * }
  * result: null
  */
-static void *peridot_client_fs_close(const void *params, int max_result_len)
+static void *peridot_client_fs_close(const void *params)
 {
 	int off_vfd;
 	int vfd;
@@ -271,14 +267,13 @@ static void *peridot_client_fs_close(const void *params, int max_result_len)
  *   length: <int32> // length (may be smaller than binary data)
  * }
  */
-static void *peridot_client_fs_read(const void *params, int max_result_len)
+static void *peridot_client_fs_read(const void *params)
 {
 	int off_vfd;
 	int off_len;
 	int len;
 	int fd;
 	int result_len;
-	int max_binlen;
 	void *result;
 	int read_len;
 	void *buf;
@@ -302,18 +297,7 @@ static void *peridot_client_fs_read(const void *params, int max_result_len)
 	}
 
 	result_len = bson_empty_size +
-		bson_measure_binary("data", 0) + bson_measure_int32("length");
-	if (result_len > max_result_len) {
-		// buffer is too small
-		errno = JSONRPC_ERR_INTERNAL_ERROR;
-		return NULL;
-	}
-
-	max_binlen = max_result_len - result_len;
-	if (len < max_binlen) {
-		max_binlen = len;
-	}
-	result_len += max_binlen;
+		bson_measure_binary("data", len) + bson_measure_int32("length");
 	result = malloc(result_len);
 	if (!result) {
 		errno = ENOMEM;
@@ -321,9 +305,9 @@ static void *peridot_client_fs_read(const void *params, int max_result_len)
 	}
 
 	memcpy(result, &bson_empty_document, bson_empty_size);
-	bson_set_binary_generic(result, "data", max_binlen, &buf);
+	bson_set_binary_generic(result, "data", len, &buf);
 
-	read_len = read(fd, buf, max_binlen);
+	read_len = read(fd, buf, len);
 	if (read_len < 0) {
 		// errno already set
 		int errno_saved = errno;
@@ -346,7 +330,7 @@ static void *peridot_client_fs_read(const void *params, int max_result_len)
  *   length: <int32> // length written (may be smaller than write data)
  * }
  */
-static void *peridot_client_fs_write(const void *params, int max_result_len)
+static void *peridot_client_fs_write(const void *params)
 {
 	int off_vfd;
 	int off_data;
@@ -376,10 +360,6 @@ static void *peridot_client_fs_write(const void *params, int max_result_len)
 	}
 
 	result_len = bson_empty_size + bson_measure_int32("length");
-	if (result_len > max_result_len) {
-		errno = JSONRPC_ERR_INTERNAL_ERROR;
-		return NULL;
-	}
 	result = malloc(result_len);
 	if (!result) {
 		errno = ENOMEM;
@@ -411,7 +391,7 @@ static void *peridot_client_fs_write(const void *params, int max_result_len)
  *   offset: <int32> // offset bytes (from beginning of file) after seek
  * }
  */
-static void *peridot_client_fs_lseek(const void *params, int max_result_len)
+static void *peridot_client_fs_lseek(const void *params)
 {
 	int off_vfd;
 	int off_offset;
@@ -445,10 +425,6 @@ static void *peridot_client_fs_lseek(const void *params, int max_result_len)
 	}
 
 	result_len = bson_empty_size + bson_measure_int32("offset");
-	if (result_len > max_result_len) {
-		errno = JSONRPC_ERR_INTERNAL_ERROR;
-		return NULL;
-	}
 	result = malloc(result_len);
 	if (!result) {
 		errno = ENOMEM;
@@ -537,7 +513,14 @@ static void peridot_client_fs_add_list(const char *list, int flags)
 	}
 }
 
-static void peridot_client_fs_cleanup(void)
+/*
+ * method: "fs.cleanup"
+ * params: {
+ *   // not used
+ * }
+ * result: null
+ */
+static void *peridot_client_fs_cleanup(const void *params)
 {
 	int vfd, fd;
 
@@ -555,11 +538,10 @@ static void peridot_client_fs_cleanup(void)
 		}
 	}
 	ALT_SEM_POST(sem_lock);
-}
 
-static peridot_rpc_server_callback cb_startup = {
-	.func = peridot_client_fs_cleanup,
-};
+	errno = 0;
+	return NULL;
+}
 
 void peridot_client_fs_init(const char *rw_path, const char *ro_path, const char *wo_path)
 {
@@ -579,8 +561,7 @@ void peridot_client_fs_init(const char *rw_path, const char *ro_path, const char
 	peridot_rpc_server_register_method("fs.read", peridot_client_fs_read);
 	peridot_rpc_server_register_method("fs.write", peridot_client_fs_write);
 	peridot_rpc_server_register_method("fs.lseek", peridot_client_fs_lseek);
-
-	peridot_rpc_server_register_startup(&cb_startup);
+	peridot_rpc_server_register_method("fs.cleanup", peridot_client_fs_cleanup);
 }
 
 void peridot_client_fs_add_file(const char *path, int flags)
@@ -597,4 +578,3 @@ void peridot_client_fs_add_directory(const char *path, int flags)
 	}
 	peridot_client_fs_add_path(path, len, (flags & O_ACCMODE) | O_DIRECTORY, 1);
 }
-
