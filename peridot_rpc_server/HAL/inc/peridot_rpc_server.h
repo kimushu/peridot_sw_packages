@@ -7,7 +7,6 @@
 extern "C" {
 #endif
 
-#define PERIDOT_RPCSRV_IF_VERSION	0x0101
 #define PERIDOT_RPCSRV_JSONRPC_VER	"2.0"
 
 enum {
