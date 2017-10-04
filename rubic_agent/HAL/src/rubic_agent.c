@@ -24,6 +24,7 @@ enum {
 	WORKER_STATE_STARTING,
 	WORKER_STATE_RUNNING,
 	WORKER_STATE_ABORTING,
+	WORKER_STATE_FAILED,
 };
 
 typedef struct rubic_agent_worker_s {
@@ -73,7 +74,7 @@ static void *worker(rubic_agent_worker *worker)
 		int off_runtime, off_file, off_source, off_debug;
 		int flags;
 		const char *file_or_source;
-		int result, enable_debug;
+		int result;
 
 		// Wait new start request
 		worker->state = WORKER_STATE_IDLE;
@@ -99,7 +100,7 @@ static void *worker(rubic_agent_worker *worker)
 
 		runtime = find_runtime(bson_get_string(params, off_runtime, NULL));
 		file_or_source = bson_get_string(params, off_file, NULL);
-		if (file) {
+		if (file_or_source) {
 			flags = RUBIC_AGENT_RUNNER_FLAG_FILE;
 		} else {
 			flags = RUBIC_AGENT_RUNNER_FLAG_SOURCE;
@@ -136,7 +137,10 @@ int rubic_agent_runner_notify_init(void *context)
 	rubic_agent_worker *worker = (rubic_agent_worker *)context;
 	void *output = malloc(32);
 	if (!output) {
-		return -ENOMEM;
+		peridot_rpc_server_async_callback(worker->context, NULL, -ENOMEM);
+		worker->context = NULL;
+		worker->state = WORKER_STATE_FAILED;
+		return 1;
 	}
 
 	bson_create_empty_document(output);
@@ -164,7 +168,7 @@ void rubic_agent_runner_cooperate(void *context)
 	}
 	worker->context = NULL;
 
-	bson_get_props(rpc_ctx->params, "name", off_name, NULL);
+	bson_get_props(rpc_ctx->params, "name", &off_name, NULL);
 	name = bson_get_string(rpc_ctx->params, off_name, "");
 	if (strcmp(name, "abort") == 0) {
 		// Abort request always succeeds with "null" response
