@@ -78,6 +78,7 @@ static int peridot_rpc_server_sink(hostbridge_channel *channel, const void *ptr,
         case AST_SOP:
             state.offset = 0;
             state.inside_packet = 1;
+            state.eop_prefix = 0;
             continue;
         case AST_EOP_PREFIX:
             state.eop_prefix = 1;

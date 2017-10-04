@@ -50,6 +50,7 @@ static int avm_sink(hostbridge_channel *channel, const void *ptr, int len)
         case AST_SOP:
             state.offset = AVM_OFFSET_INIT;
             state.inside_packet = 1;
+            state.eop_prefix = 0;
             continue;
         case AST_EOP_PREFIX:
             state.eop_prefix = 1;
