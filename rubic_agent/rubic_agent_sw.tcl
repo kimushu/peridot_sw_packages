@@ -22,15 +22,9 @@ add_sw_property supported_bsp_type TINYTH
 #
 # BSP settings...
 #
-add_sw_setting quoted_string system_h_define rubic.version RUBIC_AGENT_RUBIC_VERSION ">=0.99.1" "Supported Rubic version (semver range syntax)"
-add_sw_setting quoted_string system_h_define storage.internal RUBIC_AGENT_STORAGE_INTERNAL "/mnt" "Path of internal storage"
-add_sw_setting quoted_string system_h_define runtime1.name RUBIC_AGENT_RUNTIME1_NAME "" "Name of runtime #1"
-add_sw_setting quoted_string system_h_define runtime1.version RUBIC_AGENT_RUNTIME1_VERSION "0.0.1" "Version of runtime #1"
-add_sw_setting boolean_define_only system_h_define runtime2.present RUBIC_AGENT_RUNTIME2_PRESENT 0 "Set if this system has second runtime (runtime #2)"
-add_sw_setting quoted_string system_h_define runtime2.name RUBIC_AGENT_RUNTIME2_NAME "" "Name of runtime #2"
-add_sw_setting quoted_string system_h_define runtime2.version RUBIC_AGENT_RUNTIME2_VERSION "0.0.1" "Version of runtime #2 (semver syntax)"
-add_sw_setting boolean_define_only system_h_define runtime3.present RUBIC_AGENT_RUNTIME3_PRESENT 0 "Set if this system has third runtime (runtime #3)"
-add_sw_setting quoted_string system_h_define runtime3.name RUBIC_AGENT_RUNTIME3_NAME "" "Name of runtime #3"
-add_sw_setting quoted_string system_h_define runtime3.version RUBIC_AGENT_RUNTIME3_VERSION "0.0.1" "Version of runtime #3 (semver syntax)"
+add_sw_setting quoted_string system_h_define rubic_version RUBIC_AGENT_RUBIC_VERSION ">=1.0.0" "Supported Rubic version (semver range syntax)"
+add_sw_setting decimal_number system_h_define workers_max RUBIC_AGENT_WORKER_THREADS 1 "Maximum number of workers"
+add_sw_setting decimal_number system_h_define runtimes_max RUBIC_AGENT_MAX_RUNTIMES 1 "Maximum number of runtimes"
+add_sw_setting decimal_number system_h_define storages_max RUBIC_AGENT_MAX_STORAGES 1 "Maximum number of storages"
 
 # End of file
