@@ -556,12 +556,12 @@ void peridot_client_fs_init(const char *rw_path, const char *ro_path, const char
 	peridot_client_fs_add_list(ro_path, O_RDONLY);
 	peridot_client_fs_add_list(wo_path, O_WRONLY);
 
-	peridot_rpc_server_register_method("fs.open", peridot_client_fs_open);
-	peridot_rpc_server_register_method("fs.close", peridot_client_fs_close);
-	peridot_rpc_server_register_method("fs.read", peridot_client_fs_read);
-	peridot_rpc_server_register_method("fs.write", peridot_client_fs_write);
-	peridot_rpc_server_register_method("fs.lseek", peridot_client_fs_lseek);
-	peridot_rpc_server_register_method("fs.cleanup", peridot_client_fs_cleanup);
+	peridot_rpc_server_register_sync_method("fs.open", peridot_client_fs_open);
+	peridot_rpc_server_register_sync_method("fs.close", peridot_client_fs_close);
+	peridot_rpc_server_register_sync_method("fs.read", peridot_client_fs_read);
+	peridot_rpc_server_register_sync_method("fs.write", peridot_client_fs_write);
+	peridot_rpc_server_register_sync_method("fs.lseek", peridot_client_fs_lseek);
+	peridot_rpc_server_register_sync_method("fs.cleanup", peridot_client_fs_cleanup);
 }
 
 void peridot_client_fs_add_file(const char *path, int flags)
