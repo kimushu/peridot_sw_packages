@@ -140,7 +140,9 @@ void peridot_sw_hostbridge_gen2_service(void)
         }
         if (state.escape_prefix) {
             byte ^= AST_ESCAPE_XOR;
-            buffer[index] = byte;
+            if (state.sink_channel && !state.sink_channel->packetized) {
+                buffer[index] = byte;
+            }
             state.escape_prefix = 0;
         }
         if (state.channel_prefix) {
