@@ -294,7 +294,7 @@ static int rubic_agent_method_queue(peridot_rpc_server_async_context *context)
 {
 	const void *params = context->params;
 	const char *name;
-	int off_name, off_tid, off_runtime;
+	int off_name, off_tid;
 	int tid;
 
 	bson_get_props(params, "tid", &off_tid, NULL);
@@ -313,7 +313,7 @@ static int rubic_agent_method_queue(peridot_rpc_server_async_context *context)
 		return 0;
 	}
 
-	bson_get_props(params, "name", &off_name, "runtime", &off_runtime, NULL);
+	bson_get_props(params, "name", &off_name, NULL);
 	name = bson_get_string(params, off_name, "");
 	if (strcmp(name, "start") == 0) {
 		rubic_agent_worker *worker = &state.workers[0];
