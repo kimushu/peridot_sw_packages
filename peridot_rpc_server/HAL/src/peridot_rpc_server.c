@@ -259,6 +259,7 @@ int peridot_rpc_server_service(void)
     if (off_id < 0) {
         // Notification => Do not reply (even if error occurs)
         free(result);
+        free(job);
         return 0;
     }
     result_errno = result ? 0 : errno;
@@ -295,6 +296,7 @@ reply:
     bson_create_empty_document(output);
     bson_set_string(output, "jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
     bson_set_element(output, "id", input, off_id);
+    free(job);
     if (result_errno == 0) {
         if (result) {
             bson_set_subdocument(output, "result", result);
