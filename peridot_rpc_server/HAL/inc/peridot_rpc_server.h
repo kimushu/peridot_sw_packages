@@ -17,7 +17,13 @@ enum {
 	JSONRPC_ERR_INTERNAL_ERROR   = -32603,
 };
 
-typedef void *(*peridot_rpc_server_function)(const void *params);
+typedef struct peridot_rpc_server_async_context_s {
+	const void *params;
+} peridot_rpc_server_async_context;
+
+typedef void *(*peridot_rpc_server_sync_function)(const void *params);
+
+typedef int (*peridot_rpc_server_async_function)(peridot_rpc_server_async_context *context);
 
 typedef struct peridot_rpc_server_callback_s {
 	void (*func)(void);
@@ -26,12 +32,15 @@ typedef struct peridot_rpc_server_callback_s {
 
 typedef struct peridot_rpc_server_method_entry_s {
 	struct peridot_rpc_server_method_entry_s *next;
-	peridot_rpc_server_function func;
+	peridot_rpc_server_sync_function sync;
+	peridot_rpc_server_async_function async;
 	char name[0];
 } peridot_rpc_server_method_entry;
 
 extern int peridot_rpc_server_init(void);
-extern int peridot_rpc_server_register_method(const char *name, peridot_rpc_server_function func);
+extern int peridot_rpc_server_register_sync_method(const char *name, peridot_rpc_server_sync_function func);
+extern int peridot_rpc_server_register_async_method(const char *name, peridot_rpc_server_async_function func);
+extern int peridot_rpc_server_async_callback(peridot_rpc_server_async_context *context, void *result, int result_errno);
 extern int peridot_rpc_server_service(void);
 
 #define PERIDOT_RPC_SERVER_INSTANCE(name, state) extern int alt_no_storage

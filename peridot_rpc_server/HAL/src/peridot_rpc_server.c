@@ -18,6 +18,7 @@
 #include "bson.h"
 
 typedef struct rpcsrv_job_s {
+    peridot_rpc_server_async_context context;
     struct rpcsrv_job_s *next;
     union {
         alt_u8 bytes[0];
@@ -42,6 +43,8 @@ static struct {
 #endif
     peridot_rpc_server_method_entry *method_first, *method_last;
 } state;
+
+static int send_reply(rpcsrv_job *job, int off_id, void *result, int result_errno);
 
 /*
  * Find method entry
@@ -181,9 +184,9 @@ int peridot_rpc_server_init(void)
 }
 
 /*
- * Register function as RPC-callable
+ * Register sync function as RPC-callable
  */
-int peridot_rpc_server_register_method(const char *name, peridot_rpc_server_function func)
+static int register_method(const char *name, peridot_rpc_server_sync_function sync, peridot_rpc_server_async_function async)
 {
 	peridot_rpc_server_method_entry *entry;
 	entry = malloc(sizeof(*entry) + strlen(name) + 1);
@@ -191,7 +194,8 @@ int peridot_rpc_server_register_method(const char *name, peridot_rpc_server_func
 		return -ENOMEM;
 	}
 	entry->next = NULL;
-	entry->func = func;
+    entry->sync = sync;
+    entry->async = async;
 	strcpy(entry->name, name);
 	if (state.method_last) {
 		state.method_last->next = entry;
@@ -199,6 +203,41 @@ int peridot_rpc_server_register_method(const char *name, peridot_rpc_server_func
 		state.method_first = entry;
 	}
     state.method_last = entry;
+    return 0;
+}
+
+/*
+ * Register sync function as RPC-callable
+ */
+int peridot_rpc_server_register_sync_method(const char *name, peridot_rpc_server_sync_function func)
+{
+    return register_method(name, func, NULL);
+}
+
+/*
+ * Register async function as RPC-callable
+ */
+int peridot_rpc_server_register_async_method(const char *name, peridot_rpc_server_async_function func)
+{
+    return register_method(name, NULL, func);
+}
+
+/**
+ * @func peridot_rpc_server_async_callback
+ * @brief Callback for async methods
+ */
+int peridot_rpc_server_async_callback(peridot_rpc_server_async_context *context, void *result, int result_errno)
+{
+    rpcsrv_job *job = (rpcsrv_job *)context;
+    int off_id;
+
+    if (bson_get_props(&job->data, "id", &off_id) == 1) {
+        return send_reply(job, off_id, result, result_errno);
+    }
+
+    // For notify call
+    free(result);
+    free(job);
     return 0;
 }
 
@@ -210,13 +249,9 @@ int peridot_rpc_server_service(void)
 {
     void *input;
     int off_jsonrpc, off_method, off_params, off_id;
-    int result_errno;
     const char *method;
     peridot_rpc_server_method_entry *entry;
-    void *result = NULL;
-    alt_u8 error_doc[16];
-    void *output;
-    int reply_len;
+    void *result;
 
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
     sem_wait(&state.sem);
@@ -231,7 +266,7 @@ int peridot_rpc_server_service(void)
     // TODO: support batch request
 
     input = &job->data;
-    result_errno = 0;
+    result = NULL;
 
     if (bson_get_props(input,
         "jsonrpc", &off_jsonrpc,
@@ -239,30 +274,58 @@ int peridot_rpc_server_service(void)
         "params", &off_params,
         "id", &off_id,
         NULL) <= 0) {
-        result_errno = JSONRPC_ERR_PARSE_ERROR;
+        errno = JSONRPC_ERR_PARSE_ERROR;
         goto reply;
     }
 
     if ((strcmp(bson_get_string(input, off_jsonrpc, ""), PERIDOT_RPCSRV_JSONRPC_VER) != 0) ||
         ((method = bson_get_string(input, off_method, NULL)) == NULL)) {
-        result_errno = JSONRPC_ERR_INVALID_REQUEST;
+        errno = JSONRPC_ERR_INVALID_REQUEST;
         goto reply;
     }
 
     entry = peridot_rpc_server_find_method(method);
-    if (!entry) {
-        result_errno = JSONRPC_ERR_METHOD_NOT_FOUND;
-        goto reply;
+    if (entry) {
+        const void *params = bson_get_subdocument(input, off_params, NULL);
+        if (entry->sync) {
+            // Synchronous call
+            errno = 0;
+            result = (*entry->sync)(params);
+        } else {
+            // Asynchronous call
+            job->context.params = params;
+            errno = (*entry->async)(&job->context);
+            if (errno == 0) {
+                // Successfully queued
+                // Job will free by async_callback
+                return 0;
+            }
+        }
+    } else {
+        errno = JSONRPC_ERR_METHOD_NOT_FOUND;
     }
 
-    result = (*entry->func)(bson_get_subdocument(input, off_params, (void *)bson_empty_document));
     if (off_id < 0) {
         // Notification => Do not reply (even if error occurs)
         free(result);
         free(job);
         return 0;
     }
-    result_errno = result ? 0 : errno;
+
+reply:
+    return send_reply(job, off_id, result, result ? 0 : errno);
+}
+
+/**
+ * @func send_reply
+ * @brief Send reply message and cleanup job
+ */
+static int send_reply(rpcsrv_job *job, int off_id, void *result, int result_errno)
+{
+    alt_u8 error_doc[16];
+    void *output;
+    int reply_len;
+    void *input = &job->data;
 
 reply:
     reply_len = bson_empty_size;
@@ -285,6 +348,7 @@ reply:
     if (!output) {
         if (result_errno != 0) {
             // FIXME: Double error => Ignore this packet
+            free(job);
             return 0;
         }
         result_errno = JSONRPC_ERR_INTERNAL_ERROR;
@@ -297,6 +361,7 @@ reply:
     bson_set_string(output, "jsonrpc", PERIDOT_RPCSRV_JSONRPC_VER);
     bson_set_element(output, "id", input, off_id);
     free(job);
+
     if (result_errno == 0) {
         if (result) {
             bson_set_subdocument(output, "result", result);
