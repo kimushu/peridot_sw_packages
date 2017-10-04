@@ -70,8 +70,9 @@ static void *worker(rubic_agent_worker *worker)
 		peridot_rpc_server_async_context *context;
 		rubic_agent_runtime *runtime;
 		const void *params;
-		int off_runtime, off_file, off_debug;
-		const char *file;
+		int off_runtime, off_file, off_source, off_debug;
+		int flags;
+		const char *file_or_source;
 		int result, enable_debug;
 
 		// Wait new start request
@@ -91,19 +92,28 @@ static void *worker(rubic_agent_worker *worker)
 		bson_get_props(params,
 			"runtime", &off_runtime,
 			"file", &off_file,
+			"source", &off_source,
 			"debug", &off_debug,
 			NULL
 		);
 
 		runtime = find_runtime(bson_get_string(params, off_runtime, NULL));
-		file = bson_get_string(params, off_file, NULL);
-		if ((!runtime) || (file == NULL)) {
+		file_or_source = bson_get_string(params, off_file, NULL);
+		if (file) {
+			flags = RUBIC_AGENT_RUNNER_FLAG_FILE;
+		} else {
+			flags = RUBIC_AGENT_RUNNER_FLAG_SOURCE;
+			file_or_source = bson_get_string(params, off_source, NULL);
+		}
+		if ((!runtime) || (file_or_source == NULL)) {
 			// invalid request
 			result = -ESRCH;
 			goto reply_error;
 		}
-		enable_debug = bson_get_boolean(params, off_debug, 0);
-		result = (*runtime->runner)(file, enable_debug, worker);
+		if (bson_get_boolean(params, off_debug, 0)) {
+			flags |= RUBIC_AGENT_RUNNER_FLAG_DEBUG;
+		}
+		result = (*runtime->runner)(file_or_source, flags, worker);
 
 		if (worker->state == WORKER_STATE_STARTING) {
 			// context for "start" still alive

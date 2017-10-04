@@ -5,13 +5,13 @@
 extern "C" {
 #endif
 
-typedef struct rubic_agent_request_s {
-	const char *name;
-	const void *params;
-	void *_context;
-} rubic_agent_request;
+enum {
+	RUBIC_AGENT_RUNNER_FLAG_FILE   = (1<<0),
+	RUBIC_AGENT_RUNNER_FLAG_SOURCE = (1<<1),
+	RUBIC_AGENT_RUNNER_FLAG_DEBUG  = (1<<2),
+};
 
-typedef int (*rubic_agent_runtime_runner)(const char *file, int debug, void *context);
+typedef int (*rubic_agent_runtime_runner)(const char *data, int flags, void *context);
 
 extern int rubic_agent_init(void);
 
