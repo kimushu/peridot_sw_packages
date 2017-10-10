@@ -29,5 +29,7 @@ add_sw_setting decimal_number system_h_define max_fds PERIDOT_CLIENT_FS_MAX_FDS 
 add_sw_setting quoted_string system_h_define rw_path_list PERIDOT_CLIENT_FS_RW_PATH "" "A list of one or more full-access files or directories separated by colon(:) characters."
 add_sw_setting quoted_string system_h_define ro_path_list PERIDOT_CLIENT_FS_RO_PATH "" "A list of one or more read-only files or directories separated by colon(:) characters."
 add_sw_setting quoted_string system_h_define wo_path_list PERIDOT_CLIENT_FS_WO_PATH "" "A list of one or more write-only files or directories separated by colon(:) characters."
+add_sw_setting boolean_define_only system_h_define hash_md5 PERIDOT_CLIENT_FS_HASH_MD5 1 "Enable MD5 for hash calculation"
+add_sw_setting boolean_define_only system_h_define hash_crc32 PERIDOT_CLIENT_FS_HASH_CRC32 0 "Enable CRC-32 for hash calculation"
 
 # End of file
