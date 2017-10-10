@@ -28,7 +28,7 @@
 # define YIELD()    (void)
 #endif
 
-static struct {
+struct peridot_sw_hostbridge_gen2_state_s {
     hostbridge_channel *channels;
     hostbridge_channel *sink_channel;
     alt_16 source_channel_number;
@@ -38,7 +38,13 @@ static struct {
 #ifndef ALT_USE_DIRECT_DRIVERS
     int fd;
 #endif
-} state;
+#ifdef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
+    pthread_t tid;
+#endif
+} peridot_sw_hostbridge_gen2_state __attribute__((weak));
+
+static struct peridot_sw_hostbridge_gen2_state_s state
+__attribute__((alias("peridot_sw_hostbridge_gen2_state")));
 
 #ifdef ALT_USE_DIRECT_DRIVERS
 ALT_DRIVER_READ_EXTERNS(PERIDOT_SW_HOSTBRIDGE_PORT);
@@ -171,6 +177,7 @@ void peridot_sw_hostbridge_gen2_service(void)
 static void *peridot_sw_hostbridge_gen2_worker(void *param)
 {
     (void)param;
+    pthread_setname_np(pthread_self(), "sw_bridge_gen2");
     for (;;) {
         peridot_sw_hostbridge_gen2_service();
     }
@@ -186,9 +193,6 @@ static void *peridot_sw_hostbridge_gen2_worker(void *param)
 int peridot_sw_hostbridge_gen2_init(void)
 {
     int result;
-#ifdef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
-    pthread_t tid;
-#endif
 #ifndef ALT_USE_DIRECT_DRIVERS
     state.fd = open(PERIDOT_SW_HOSTBRIDGE_PATH, O_RDWR
 # ifndef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
@@ -203,7 +207,7 @@ int peridot_sw_hostbridge_gen2_init(void)
         return result;
     }
 #ifdef PERIDOT_SW_HOSTBRIDGE_GEN2_USE_RECEIVER_THREAD
-    result = -pthread_create(&tid, NULL, peridot_sw_hostbridge_gen2_worker, NULL);
+    result = -pthread_create(&state.tid, NULL, peridot_sw_hostbridge_gen2_worker, NULL);
 #endif
     return result;
 }

@@ -26,23 +26,27 @@ typedef struct rpcsrv_job_s {
     } data;
 } rpcsrv_job;
 
-static struct {
-	hostbridge_channel channel;
+struct peridot_rpc_server_state_s {
+    hostbridge_channel channel;
     alt_u8 escape_prefix;
     alt_u8 eop_prefix;
     alt_u8 inside_packet;
-	size_t offset;
-	union {
-		alt_u8 bytes[4];
-		alt_32 value;
-	} length;
+    size_t offset;
+    union {
+        alt_u8 bytes[4];
+        alt_32 value;
+    } length;
     rpcsrv_job *incoming_job;
     rpcsrv_job *volatile pending_job;
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
     sem_t sem;
+    pthread_t tids[PERIDOT_RPCSRV_WORKER_THREADS];
 #endif
     peridot_rpc_server_method_entry *method_first, *method_last;
-} state;
+} peridot_rpc_server_state __attribute__((weak));
+
+static struct peridot_rpc_server_state_s state
+__attribute__((alias("peridot_rpc_server_state")));
 
 static int send_reply(rpcsrv_job *job, int off_id, void *result, int result_errno);
 
@@ -51,15 +55,15 @@ static int send_reply(rpcsrv_job *job, int off_id, void *result, int result_errn
  */
 static peridot_rpc_server_method_entry *peridot_rpc_server_find_method(const char *name)
 {
-	peridot_rpc_server_method_entry *entry = state.method_first;
+    peridot_rpc_server_method_entry *entry = state.method_first;
 
-	for (; entry; entry = entry->next) {
-		if (strcmp(entry->name, name) == 0) {
-			return entry;
-		}
-	}
+    for (; entry; entry = entry->next) {
+        if (strcmp(entry->name, name) == 0) {
+            return entry;
+        }
+    }
 
-	return NULL;
+    return NULL;
 }
 
 /**
@@ -158,27 +162,29 @@ static void *peridot_rpc_server_worker(void *param)
 int peridot_rpc_server_init(void)
 {
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
-	int i;
+    int i;
+    char name[16];
 #endif
 
-	// Register packetized stream channel
-	state.channel.dest.sink = peridot_rpc_server_sink;
-	state.channel.number = PERIDOT_RPCSRV_CHANNEL;
-	state.channel.packetized = 1;
-	state.channel.use_fd = 0;
-	peridot_sw_hostbridge_gen2_register_channel(&state.channel);
+    // Register packetized stream channel
+    state.channel.dest.sink = peridot_rpc_server_sink;
+    state.channel.number = PERIDOT_RPCSRV_CHANNEL;
+    state.channel.packetized = 1;
+    state.channel.use_fd = 0;
+    peridot_sw_hostbridge_gen2_register_channel(&state.channel);
 
 #ifdef PERIDOT_RPCSRV_MULTI_THREAD
-	sem_init(&state.sem, 0, 0);
-	for (i = 0; i < (PERIDOT_RPCSRV_WORKER_THREADS); ++i) {
-        pthread_t tid;
+    sem_init(&state.sem, 0, 0);
+    strcpy(name, "rpc_server_x");
+    for (i = 0; i < (PERIDOT_RPCSRV_WORKER_THREADS); ++i) {
         int result;
-		result = pthread_create(&tid, NULL, peridot_rpc_server_worker, NULL);
-        (void)tid;
+        result = pthread_create(&state.tids[i], NULL, peridot_rpc_server_worker, NULL);
         if (result != 0) {
             return -result;
         }
-	}
+        name[11] = i + '0';
+        pthread_setname_np(state.tids[i], name);
+    }
 #endif
 
     return 0;
@@ -189,20 +195,20 @@ int peridot_rpc_server_init(void)
  */
 static int register_method(const char *name, peridot_rpc_server_sync_function sync, peridot_rpc_server_async_function async)
 {
-	peridot_rpc_server_method_entry *entry;
-	entry = malloc(sizeof(*entry) + strlen(name) + 1);
-	if (!entry) {
-		return -ENOMEM;
-	}
-	entry->next = NULL;
+    peridot_rpc_server_method_entry *entry;
+    entry = malloc(sizeof(*entry) + strlen(name) + 1);
+    if (!entry) {
+        return -ENOMEM;
+    }
+    entry->next = NULL;
     entry->sync = sync;
     entry->async = async;
-	strcpy(entry->name, name);
-	if (state.method_last) {
-		state.method_last->next = entry;
-	} else {
-		state.method_first = entry;
-	}
+    strcpy(entry->name, name);
+    if (state.method_last) {
+        state.method_last->next = entry;
+    } else {
+        state.method_first = entry;
+    }
     state.method_last = entry;
     return 0;
 }

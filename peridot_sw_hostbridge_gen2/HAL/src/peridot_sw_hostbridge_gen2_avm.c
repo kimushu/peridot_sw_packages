@@ -14,7 +14,7 @@ enum {
     AVM_OFFSET_NOTR,
 };
 
-static struct {
+struct peridot_sw_hostbridge_gen2_avm_state_s {
     hostbridge_channel channel;
     alt_u8 escape_prefix;
     alt_u8 eop_prefix;
@@ -25,7 +25,10 @@ static struct {
         alt_u16 u16[4];
         alt_u32 u32[2];
     } buffer;
-} state;
+} peridot_sw_hostbridge_gen2_avm_state __attribute__((weak));
+
+static struct peridot_sw_hostbridge_gen2_avm_state_s state
+__attribute__((alias("peridot_sw_hostbridge_gen2_avm_state")));
 
 inline static alt_u16 SWAP16(alt_u16 x)
 {
