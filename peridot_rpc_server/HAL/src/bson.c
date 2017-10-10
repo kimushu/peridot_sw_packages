@@ -482,6 +482,31 @@ int bson_measure_binary(const char *key, int binlen)
 	return bson_set_binary_generic(NULL, key, binlen, NULL);
 }
 
+int bson_shrink_binary(void *doc, void *buf, int binlen)
+{
+	char *len = (char *)buf - 5;
+	int old_binlen = read_unaligned_int(len);
+	int old_doclen;
+
+	if (((char *)buf)[old_binlen] != 0x00) {
+		// Shrink is allowed only for the last element
+		return -1;
+	}
+	if (old_binlen > binlen) {
+		// Growth is not allowed
+		return -1;
+	}
+	if (old_binlen == binlen) {
+		// Nothing to do
+		return 0;
+	}
+
+	old_doclen = read_unaligned_int(doc);
+	((char *)buf)[binlen] = 0x00;
+	write_unaligned_int(doc, old_doclen - (old_binlen - binlen));
+	return 0;
+}
+
 int bson_set_element(void *doc1, const char *key, const void *doc2, int offset)
 {
 	const char *data2;

@@ -31,6 +31,7 @@ extern int bson_set_null(void *doc, const char *key);
 extern int bson_measure_null(const char *key);
 extern int bson_set_binary_generic(void *doc, const char* key, int binlen, void **bufptr);
 extern int bson_measure_binary(const char *key, int binlen);
+extern int bson_shrink_binary(void *doc, void *buf, int binlen);
 extern int bson_set_element(void *doc1, const char *key, const void *doc2, int offset);
 extern int bson_measure_element(const char *key, const void *doc, int offset);
 extern int bson_measure_document(const void *doc);
