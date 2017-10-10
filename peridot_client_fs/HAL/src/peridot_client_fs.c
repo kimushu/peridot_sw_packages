@@ -321,6 +321,7 @@ static void *peridot_client_fs_read(const void *params)
 		errno = errno_saved;
 		return NULL;
 	}
+	bson_shrink_binary(result, buf, read_len);
 
 	bson_set_int32(result, "length", read_len);
 	return result;

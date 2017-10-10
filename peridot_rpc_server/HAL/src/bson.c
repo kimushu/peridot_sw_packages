@@ -484,15 +484,15 @@ int bson_measure_binary(const char *key, int binlen)
 
 int bson_shrink_binary(void *doc, void *buf, int binlen)
 {
-	char *len = (char *)buf - 5;
-	int old_binlen = read_unaligned_int(len);
+	char *lenptr = (char *)buf - 5;
+	int old_binlen = read_unaligned_int(lenptr);
 	int old_doclen;
 
 	if (((char *)buf)[old_binlen] != 0x00) {
 		// Shrink is allowed only for the last element
 		return -1;
 	}
-	if (old_binlen > binlen) {
+	if (old_binlen < binlen) {
 		// Growth is not allowed
 		return -1;
 	}
@@ -501,8 +501,12 @@ int bson_shrink_binary(void *doc, void *buf, int binlen)
 		return 0;
 	}
 
-	old_doclen = read_unaligned_int(doc);
+	// Set new end marker and binary length
 	((char *)buf)[binlen] = 0x00;
+	write_unaligned_int(lenptr, binlen);
+
+	// Adjust entire document length
+	old_doclen = read_unaligned_int(doc);
 	write_unaligned_int(doc, old_doclen - (old_binlen - binlen));
 	return 0;
 }
