@@ -3,6 +3,7 @@
 
 #include "alt_types.h"
 #include "system.h"
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,8 @@ extern void peridot_sw_hostbridge_gen2_service(void);
 
 extern int peridot_sw_hostbridge_gen2_register_channel(hostbridge_channel *channel);
 extern int peridot_sw_hostbridge_gen2_source(hostbridge_channel *channel, const void *ptr, int len, int flags);
+
+extern int peridot_sw_hostbridge_gen2_mkpipe(alt_u8 channel, int output_fd, int input_fd, size_t input_capacity);
 
 #define PERIDOT_SW_HOSTBRIDGE_GEN2_INSTANCE(name, state) \
     extern int alt_no_storage
