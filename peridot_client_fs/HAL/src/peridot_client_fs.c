@@ -3,6 +3,7 @@
 #include <string.h>
 #include <malloc.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include "os/alt_sem.h"
 #include "sys/alt_irq.h"
 #include "peridot_client_fs.h"
@@ -440,8 +441,89 @@ static void *peridot_client_fs_lseek(const void *params)
 		return NULL;
 	}
 
-	memcpy(result, &bson_empty_document, bson_empty_size);
+	bson_create_empty_document(result);
 	bson_set_int32(result, "offset", offset_after);
+	return result;
+}
+
+/*
+ * method: "fs.ioctl"
+ * params: {
+ *   fd: <int32>    // file descriptor
+ *   req: <int32>   // request number (must be a zero or positive number)
+ *   arg: <binary>  // argument (can be null)
+ * }
+ * result: {
+ *   result: <int32>    // return value from ioctl
+ *   response: <binary> // response (modified arg data)
+ * }
+ */
+static void *peridot_client_fs_ioctl(const void *params)
+{
+	int off_vfd;
+	int off_req;
+	int off_arg;
+	int fd;
+	int req;
+	const void *arg_input;
+	void *arg_output;
+	int arg_len;
+	int result_len;
+	void *result;
+	int return_value;
+
+	if (bson_get_props(params,
+			"fd", &off_vfd,
+			"req", &off_req,
+			"arg", &off_arg,
+			NULL) < 0) {
+		errno = JSONRPC_ERR_INVALID_REQUEST;
+		return NULL;
+	}
+
+	if ((fd = peridot_client_fs_get_fd(params, off_vfd, NULL)) < 0) {
+		// errno already set
+		return NULL;
+	}
+
+	req = bson_get_int32(params, off_req, -1);
+	arg_input = bson_get_binary(params, off_arg, &arg_len);
+
+	if (req < 0) {
+		errno = JSONRPC_ERR_INVALID_PARAMS;
+		return NULL;
+	}
+
+	result_len = bson_empty_size + bson_measure_int32("result");
+	if (arg_input) {
+		result_len += bson_measure_binary("response", arg_len);
+	} else {
+		result_len += bson_measure_null("response");
+	}
+	result = malloc(result_len);
+	if (!result) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	bson_create_empty_document(result);
+	if (arg_input) {
+		bson_set_binary_generic(result, "response", arg_len, &arg_output);
+		memcpy(arg_output, arg_input, arg_len);
+	} else {
+		bson_set_null(result, "response");
+	}
+
+	return_value = ioctl(fd, req, arg_output);
+	if (return_value < 0) {
+		// errno already set
+		int errno_saved = errno;
+		free(result);
+		errno = errno_saved;
+		return NULL;
+	}
+
+	bson_set_int32(result, "result", return_value);
 	return result;
 }
 
@@ -561,6 +643,7 @@ void peridot_client_fs_init(const char *rw_path, const char *ro_path, const char
 	peridot_rpc_server_register_sync_method("fs.read", peridot_client_fs_read);
 	peridot_rpc_server_register_sync_method("fs.write", peridot_client_fs_write);
 	peridot_rpc_server_register_sync_method("fs.lseek", peridot_client_fs_lseek);
+	peridot_rpc_server_register_sync_method("fs.ioctl", peridot_client_fs_ioctl);
 	peridot_rpc_server_register_sync_method("fs.cleanup", peridot_client_fs_cleanup);
 }
 
