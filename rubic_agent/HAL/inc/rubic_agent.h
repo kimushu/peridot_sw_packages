@@ -12,11 +12,15 @@ enum {
 };
 
 typedef int (*rubic_agent_runtime_runner)(const char *data, int flags, void *context);
+typedef int (*rubic_agent_prog_blksize)(const char *area, void *user_data);
+typedef int (*rubic_agent_prog_reader)(const char *area, void *user_data, int offset, void *ptr, int len);
+typedef int (*rubic_agent_prog_writer)(const char *area, void *user_data, int offset, const void *ptr, int len);
 
 extern int rubic_agent_init(void);
 
 extern int rubic_agent_register_runtime(const char *name, const char *version, rubic_agent_runtime_runner runner);
 extern int rubic_agent_register_storage(const char *name, const char *path);
+extern int rubic_agent_register_programmer(rubic_agent_prog_blksize blksize, rubic_agent_prog_reader reader, rubic_agent_prog_writer writer, void *user_data);
 extern int rubic_agent_service(void);
 
 extern int rubic_agent_runner_notify_init(void *context);

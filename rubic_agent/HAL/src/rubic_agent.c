@@ -7,6 +7,9 @@
 #include "system.h"
 #include "bson.h"
 #include "peridot_rpc_server.h"
+#ifdef RUBIC_AGENT_ENABLE_PROGRAMMER
+# include "md5.h"
+#endif  /* RUBIC_AGENT_ENABLE_PROGRAMMER */
 
 typedef struct rubic_agent_runtime_s {
 	const char *name;
@@ -42,6 +45,14 @@ struct rubic_agent_state_s {
 	rubic_agent_storage storages[RUBIC_AGENT_MAX_STORAGES];
 	rubic_agent_worker workers[RUBIC_AGENT_WORKER_THREADS];
 	void *cached_info;
+#ifdef RUBIC_AGENT_ENABLE_PROGRAMMER
+	struct {
+		rubic_agent_prog_blksize blksize;
+		rubic_agent_prog_reader reader;
+		rubic_agent_prog_writer writer;
+		void *user_data;
+	} prog;
+#endif  /* RUBIC_AGENT_ENABLE_PROGRAMMER */
 } rubic_agent_state __attribute__((weak));
 
 static struct rubic_agent_state_s state
@@ -423,6 +434,167 @@ int rubic_agent_register_storage(const char *name, const char *path)
 	}
 	return -ENOSPC;
 }
+
+#ifdef RUBIC_AGENT_ENABLE_PROGRAMMER
+/**
+ * @func rubic_agent_method_prog_hash
+ * @brief Programmer hash read request (sync)
+ * @param params {
+ *   area: <string>
+ *   offset: <int32>
+ * }
+ * @return {
+ *   hash: <binary>
+ *   length: <int32>
+ * }
+ */
+void *rubic_agent_method_prog_hash(const void *params)
+{
+	int off_area, off_offset;
+	const char *area;
+	int offset;
+	void *buf;
+	int result;
+	digest_md5_t hash, *hash_ptr;
+	int block_size;
+	
+	if (bson_get_props(params, "area", &off_area, "offset", &off_offset, NULL) != 1) {
+inval:
+		errno = EINVAL;
+		return NULL;
+	}
+
+	area = bson_get_string(params, off_area, NULL);
+	if (!area) {
+		goto inval;
+	}
+
+	block_size = (*state.prog.blksize)(area, state.prog.user_data);
+	if (block_size <= 0) {
+		errno = ENODEV;
+		return NULL;
+	}
+
+	offset = bson_get_int32(params, off_offset, -1);
+	if ((offset < 0) || ((offset & (block_size - 1)) != 0)) {
+		goto inval;
+	}
+
+	buf = malloc(block_size);
+	if (!buf) {
+nomem:
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	result = (*state.prog.reader)(area, state.prog.user_data, offset, buf, block_size);
+	if (result < 0) {
+		free(buf);
+		errno = EIO;
+		return NULL;
+	}
+
+	digest_md5_calc(&hash, buf, block_size);
+	free(buf);
+
+	buf = malloc(bson_empty_size + bson_measure_binary("hash", sizeof(hash)) + bson_measure_int32("length"));
+	if (!buf) {
+		goto nomem;
+	}
+
+	bson_create_empty_document(buf);
+	bson_set_binary_generic(buf, "hash", sizeof(hash), (void **)&hash_ptr);
+	memcpy(hash_ptr, &hash, sizeof(hash));
+	bson_set_int32(buf, "length", block_size);
+	return buf;
+}
+
+/**
+ * @func rubic_agent_method_prog_write
+ * @brief Programmer write request (sync)
+ * @param params {
+ *   area: <string>
+ *   offset: <int32>
+ *   data: <binary>
+ *   hash: <binary>
+ * }
+ * @return null
+ */
+void *rubic_agent_method_prog_write(const void *params)
+{
+	int off_area, off_offset, off_data, off_hash;
+	const char *area;
+	int offset;
+	int result;
+	int data_len, hash_len;
+	const void *data_ptr;
+	digest_md5_t hash;
+	const digest_md5_t *hash_ptr;
+	int block_size;
+
+	if (bson_get_props(params, "area", &off_area, "offset", &off_offset, "data", &off_data, "hash", &off_hash, NULL) < 0) {
+inval:
+		errno = EINVAL;
+		return NULL;
+	}
+
+	area = bson_get_string(params, off_area, NULL);
+	if (!area) {
+		goto inval;
+	}
+
+	block_size = (*state.prog.blksize)(area, state.prog.user_data);
+	if (block_size <= 0) {
+		errno = ENODEV;
+		return NULL;
+	}
+
+	offset = bson_get_int32(params, off_offset, -1);
+	if ((offset < 0) || ((offset & (block_size - 1)) != 0)) {
+		goto inval;
+	}
+
+	data_ptr = bson_get_binary(params, off_data, &data_len);
+	if ((!data_ptr) || ((data_len & (block_size - 1)) != 0)) {
+		goto inval;
+	}
+
+	hash_ptr = bson_get_binary(params, off_hash, &hash_len);
+	if ((!hash_ptr) || (hash_len != sizeof(hash))) {
+		goto inval;
+	}
+
+	digest_md5_calc(&hash, data_ptr, data_len);
+	if (memcmp(&hash, hash_ptr, sizeof(hash)) != 0) {
+		errno = EILSEQ;
+		return NULL;
+	}
+
+	result = (*state.prog.writer)(area, state.prog.user_data, offset, data_ptr, data_len);
+	if (result < 0) {
+		errno = EIO;
+		return NULL;
+	}
+
+	errno = 0;
+	return NULL;
+}
+
+/**
+ * @func rubic_agent_register_programmer
+ * @brief Register firmware updater
+ */
+int rubic_agent_register_programmer(rubic_agent_prog_blksize blksize, rubic_agent_prog_reader reader, rubic_agent_prog_writer writer, void *user_data)
+{
+	state.prog.blksize = blksize;
+	state.prog.reader = reader;
+	state.prog.writer = writer;
+	state.prog.user_data = user_data;
+	peridot_rpc_server_register_sync_method("rubic.prog.hash", rubic_agent_method_prog_hash);
+	peridot_rpc_server_register_sync_method("rubic.prog.write", rubic_agent_method_prog_write);
+	return 0;
+}
+#endif  /* RUBIC_AGENT_ENABLE_PROGRAMMER */
 
 /**
  * @func rubic_agent_start
