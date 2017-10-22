@@ -319,10 +319,9 @@ int bson_measure_string(const char *key, const char *string)
 	return bson_set_string(NULL, key, string);
 }
 
-static int set_subdocument(void *doc, char type, const char *key, const void *sub_doc)
+static int set_subelement(void *doc, const char *key, char type, const void *ptr, int len)
 {
 	int keylen = strlen(key) + 1;
-	int sublen = read_unaligned_int(sub_doc);
 
 	if (doc) {
 		char *data = (char *)doc;
@@ -332,54 +331,45 @@ static int set_subdocument(void *doc, char type, const char *key, const void *su
 		memcpy(end, key, keylen);
 		end += keylen;
 
-		memcpy(end, sub_doc, sublen);
-		end += sublen;
+		memcpy(end, ptr, len);
+		end += len;
 
 		*end++ = 0x00;
 		write_unaligned_int(data, end - data);
 	}
 
-	return 1 + keylen + sublen;
+	return 1 + keylen + len;
+}
+
+static int set_subdocument(void *doc, const char *key, char type, const void *sub_doc)
+{
+	return set_subelement(doc, key, type, sub_doc, read_unaligned_int(sub_doc));
 }
 
 int bson_set_subdocument(void *doc, const char *key, const void *sub_doc)
 {
-	return set_subdocument(doc, 0x03, key, sub_doc);
+	return set_subdocument(doc, key, 0x03, sub_doc);
 }
 
-int bson_measure_subdocument(const char *key, const void *doc)
+int bson_measure_subdocument(const char *key, const void *sub_doc)
 {
-	return set_subdocument(NULL, 0x03, key, doc);
+	return set_subdocument(NULL, key, 0x03, sub_doc);
 }
 
 int bson_set_array(void *doc, const char *key, const void *sub_doc)
 {
-	return set_subdocument(doc, 0x04, key, sub_doc);
+	return set_subdocument(doc, key, 0x04, sub_doc);
 }
 
-int bson_measure_array(const char *key, const void *doc)
+int bson_measure_array(const char *key, const void *sub_doc)
 {
-	return set_subdocument(NULL, 0x04, key, doc);
+	return set_subdocument(NULL, key, 0x04, sub_doc);
 }
 
 int bson_set_boolean(void *doc, const char *key, int value)
 {
-	int keylen = strlen(key) + 1;
-
-	if (doc) {
-		char *data = (char *)doc;
-		char *end = data + read_unaligned_int(data);
-
-		end[-1] = 0x08;
-		memcpy(end, key, keylen);
-		end += keylen;
-
-		*end++ = (value ? 1 : 0);
-		*end++ = 0x00;
-		write_unaligned_int(data, end - data);
-	}
-
-	return 1 + keylen + 1;
+	char bool_value = (value ? 1 : 0);
+	return set_subelement(doc, key, 0x08, &bool_value, 1);
 }
 
 int bson_measure_boolean(const char *key)
@@ -389,24 +379,7 @@ int bson_measure_boolean(const char *key)
 
 int bson_set_int32(void *doc, const char *key, int value)
 {
-	int keylen = strlen(key) + 1;
-
-	if (doc) {
-		char *data = (char *)doc;
-		char *end = data + read_unaligned_int(data);
-
-		end[-1] = 0x10;
-		memcpy(end, key, keylen);
-		end += keylen;
-
-		memcpy(end, &value, 4);
-		end += 4;
-
-		*end++ = 0x00;
-		write_unaligned_int(data, end - data);
-	}
-
-	return 1 + keylen + 4;
+	return set_subelement(doc, key, 0x10, &value, 4);
 }
 
 int bson_measure_int32(const char *key)
@@ -416,21 +389,7 @@ int bson_measure_int32(const char *key)
 
 int bson_set_null(void *doc, const char *key)
 {
-	int keylen = strlen(key) + 1;
-
-	if (doc) {
-		char *data = (char *)doc;
-		char *end = data + read_unaligned_int(data);
-
-		end[-1] = 0x0a;
-		memcpy(end, key, keylen);
-		end += keylen;
-
-		*end++ = 0x00;
-		write_unaligned_int(data, end - data);
-	}
-
-	return 1 + keylen;
+	return set_subelement(doc, key, 0x0a, NULL, 0);
 }
 
 int bson_measure_null(const char *key)
@@ -516,7 +475,6 @@ int bson_set_element(void *doc1, const char *key, const void *doc2, int offset)
 	const char *data2;
 	const char *end2;
 	char type;
-	int keylen;
 	int elmlen;
 
 	if ((!doc2) || (offset < 4)) {
@@ -541,23 +499,7 @@ int bson_set_element(void *doc1, const char *key, const void *doc2, int offset)
 		goto not_valid_bson;
 	}
 
-	keylen = strlen(key) + 1;
-
-	if (doc1) {
-		char *data1 = (char *)doc1;
-		char *end1 = data1 + read_unaligned_int(data1);
-
-		end1[-1] = type;
-		memcpy(end1, key, keylen);
-		end1 += keylen;
-		memcpy(end1, data2, elmlen);
-		end1 += elmlen;
-		
-		*end1++ = 0x00;
-		write_unaligned_int(doc1, end1 - data1);
-	}
-
-	return 1 + keylen + elmlen;
+	return set_subelement(doc1, key, type, data2, elmlen);
 
 no_bson:
 not_valid_bson:
