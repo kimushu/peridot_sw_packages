@@ -458,7 +458,7 @@ void *rubic_agent_method_prog_hash(const void *params)
 	digest_md5_t hash, *hash_ptr;
 	int block_size;
 	
-	if (bson_get_props(params, "area", &off_area, "offset", &off_offset, NULL) != 1) {
+	if (bson_get_props(params, "area", &off_area, "offset", &off_offset, NULL) < 0) {
 inval:
 		errno = EINVAL;
 		return NULL;
