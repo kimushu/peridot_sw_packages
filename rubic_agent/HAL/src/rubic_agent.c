@@ -4,6 +4,8 @@
 #include <errno.h>
 #include <string.h>
 #include <malloc.h>
+#include <sys/fcntl.h>
+#include <unistd.h>
 #include "system.h"
 #include "bson.h"
 #include "peridot_rpc_server.h"
@@ -28,6 +30,7 @@ enum {
 	WORKER_STATE_RUNNING,
 	WORKER_STATE_ABORTING,
 	WORKER_STATE_FAILED,
+	WORKER_STATE_AUTOBOOT,
 };
 
 typedef struct rubic_agent_worker_s {
@@ -77,6 +80,153 @@ static rubic_agent_runtime *find_runtime(const char *name)
 	return NULL;
 }
 
+char *strskip(char *s, const char *skip)
+{
+	if (strpbrk(s, skip) == s) {
+		return s + strspn(s, skip);
+	}
+	return s;
+}
+
+/**
+ * @func parse_boot_json
+ * @brief Parse boot.json for auto boot
+ */
+static char *parse_boot_json(rubic_agent_runtime **pruntime, int *pflags)
+{
+	static const char *const json_spaces = "\t\r\n ";
+	rubic_agent_storage *storage;
+	int i;
+	char buffer[256];
+	char *input, *file;
+	int fd;
+
+	*pruntime = find_runtime(NULL);
+	*pflags = RUBIC_AGENT_RUNNER_FLAG_AUTOBOOT | RUBIC_AGENT_RUNNER_FLAG_FILE;
+	file = NULL;
+	
+	for (i = 0; i < RUBIC_AGENT_MAX_STORAGES; ++i) {
+		storage = &state.storages[i];
+		if (!storage->name) {
+			break;
+		}
+		if (strcmp(storage->name, "internal") == 0) {
+			goto found_storage;
+		}
+	}
+	// No internal storage
+	return NULL;
+
+found_storage:
+	buffer[sizeof(buffer) - 1] = 0;
+	strncpy(buffer, storage->path, sizeof(buffer) - 1);
+	strncat(buffer, "/boot.json", sizeof(buffer) - 1);
+	fd = open(buffer, O_RDONLY);
+	if (fd < 0) {
+		// No boot file
+		return NULL;
+	}
+	i = 0;
+	for (;;) {
+		int bytes_read = read(fd, buffer + i, sizeof(buffer) - 1 - i);
+		if (bytes_read < 0) {
+			// Read error
+			close(fd);
+			return NULL;
+		}
+		if (bytes_read == 0) {
+			// EOF
+			break;
+		}
+		i += bytes_read;
+	}
+	close(fd);
+
+	// Parse JSON
+	input = strskip(buffer, json_spaces);
+	if (*input++ != '{') {
+		goto syntax_error;
+	}
+	for (;;) {
+		char *key, *val;
+		input = strskip(input, json_spaces);
+		if (*input++ != '"') {
+			goto syntax_error;
+		}
+		key = input;
+		input = strchr(input, '"');
+		if (!input) {
+			goto syntax_error;
+		}
+		*input++ = '\0';
+		input = strskip(input, json_spaces);
+		if (*input++ != ':') {
+			goto syntax_error;
+		}
+		input = strskip(input, json_spaces);
+		if (*input++ != '"') {
+			// not string
+			input = strpbrk(input, "{}[],");
+			if (!input) {
+				goto syntax_error;
+			}
+		} else {
+			// string
+			val = input;
+			for (;;) {
+				input = strpbrk(input, "\\\"");
+				if (!input) {
+					goto syntax_error;
+				}
+				if (*input == '"') {
+					*input++ = '\0';
+					break;
+				}
+				if (*input == '\\') {
+					// This routine do not convert escape characters!
+					input += 2;
+				}
+			}
+			input = strskip(input, json_spaces);
+
+			if (strcmp(key, "runtime") == 0) {
+				*pruntime = find_runtime(val);
+			} else if (strcmp(key, "file") == 0) {
+				file = val;
+			}
+		}
+		if (*input++ == '}') {
+			// End of JSON
+			break;
+		}
+		if (*input++ != ',') {
+			goto syntax_error;
+		}
+	}
+
+	if (!file) {
+		goto syntax_error;
+	}
+
+	if (*file != '/') {
+		// Convert to full path
+		char *full_path = (char *)malloc(strlen(storage->path) + 1 + strlen(file) + 1);
+		if (!full_path) {
+			return NULL;
+		}
+		strcpy(full_path, storage->path);
+		strcat(full_path, "/");
+		strcat(full_path, file);
+		return full_path;
+	}
+
+	// Return path
+	return strdup(file);
+
+syntax_error:
+	return NULL;
+}
+
 /**
  * @func worker_thread
  * @brief Main worker thread
@@ -93,6 +243,17 @@ static void *worker_thread(rubic_agent_worker *worker)
 		const char *file_or_source;
 		int result;
 
+		if (worker->state == WORKER_STATE_AUTOBOOT) {
+			file_or_source = parse_boot_json(&runtime, &flags);
+			if (!file_or_source) {
+				worker->state = WORKER_STATE_IDLE;
+				continue;
+			}
+			context = NULL;
+			worker->state = WORKER_STATE_STARTING;
+			pthread_mutex_unlock(&worker->mutex);
+			goto invoke_runner;
+		}
 		worker->state = WORKER_STATE_IDLE;
 		pthread_mutex_unlock(&worker->mutex);
 
@@ -125,13 +286,14 @@ static void *worker_thread(rubic_agent_worker *worker)
 			flags = RUBIC_AGENT_RUNNER_FLAG_SOURCE;
 			file_or_source = bson_get_string(params, off_source, NULL);
 		}
+		if (bson_get_boolean(params, off_debug, 0)) {
+			flags |= RUBIC_AGENT_RUNNER_FLAG_DEBUG;
+		}
+invoke_runner:
 		if ((!runtime) || (file_or_source == NULL)) {
 			// invalid request
 			result = -ESRCH;
 			goto reply_error;
-		}
-		if (bson_get_boolean(params, off_debug, 0)) {
-			flags |= RUBIC_AGENT_RUNNER_FLAG_DEBUG;
 		}
 		result = (*runtime->runner)(file_or_source, flags, worker);
 
@@ -140,7 +302,9 @@ static void *worker_thread(rubic_agent_worker *worker)
 			// context for "start" still alive
 reply_error:
 			worker->context = NULL;
-			peridot_rpc_server_async_callback(context, NULL, result);
+			if (context) {
+				peridot_rpc_server_async_callback(context, NULL, result);
+			}
 		}
 
 		context = worker->callback_context;
@@ -152,6 +316,10 @@ reply_error:
 				bson_set_int32(output, "result", result);
 			}
 			peridot_rpc_server_async_callback(context, output, output ? 0 : -ENOMEM);
+		}
+
+		if (flags & RUBIC_AGENT_RUNNER_FLAG_AUTOBOOT) {
+			free((char *)file_or_source);
 		}
 	}
 
@@ -600,7 +768,7 @@ int rubic_agent_register_programmer(rubic_agent_prog_blksize blksize, rubic_agen
  * @func rubic_agent_start
  * @brief Start receiver thread(s)
  */
-int rubic_agent_service(void)
+int rubic_agent_service(int disableAutoBoot)
 {
 #if (RUBIC_AGENT_WORKER_THREADS < 1)
 # error "rubic_agent.workers_max must be equal or larger than 1."
@@ -620,6 +788,9 @@ int rubic_agent_service(void)
 	}
 #endif  /* RUBIC_AGENT_WORKER_THREADS > 1 */
 	state.workers[0].tid = pthread_self();
+	if (!disableAutoBoot) {
+		state.workers[0].state = WORKER_STATE_AUTOBOOT;
+	}
 	worker_thread(&state.workers[0]);
 	return 0;
 }

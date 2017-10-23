@@ -6,9 +6,10 @@ extern "C" {
 #endif
 
 enum {
-	RUBIC_AGENT_RUNNER_FLAG_FILE   = (1<<0),
-	RUBIC_AGENT_RUNNER_FLAG_SOURCE = (1<<1),
-	RUBIC_AGENT_RUNNER_FLAG_DEBUG  = (1<<2),
+	RUBIC_AGENT_RUNNER_FLAG_FILE        = (1<<0),
+	RUBIC_AGENT_RUNNER_FLAG_SOURCE      = (1<<1),
+	RUBIC_AGENT_RUNNER_FLAG_DEBUG       = (1<<2),
+	RUBIC_AGENT_RUNNER_FLAG_AUTOBOOT    = (1<<3),
 };
 
 typedef int (*rubic_agent_runtime_runner)(const char *data, int flags, void *context);
@@ -21,7 +22,7 @@ extern int rubic_agent_init(void);
 extern int rubic_agent_register_runtime(const char *name, const char *version, rubic_agent_runtime_runner runner);
 extern int rubic_agent_register_storage(const char *name, const char *path);
 extern int rubic_agent_register_programmer(rubic_agent_prog_blksize blksize, rubic_agent_prog_reader reader, rubic_agent_prog_writer writer, void *user_data);
-extern int rubic_agent_service(void);
+extern int rubic_agent_service(int disableAutoBoot);
 
 extern int rubic_agent_runner_notify_init(void *context);
 extern void rubic_agent_runner_cooperate(void *context);
