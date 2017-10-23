@@ -4,7 +4,7 @@
 
 create_sw_package rubic_agent
 
-set_sw_property version 1.1
+set_sw_property version 1.2
 set_sw_property auto_initialize true
 set_sw_property bsp_subdirectory services
 
