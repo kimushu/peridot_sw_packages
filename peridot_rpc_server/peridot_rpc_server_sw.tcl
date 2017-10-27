@@ -4,7 +4,7 @@
 
 create_sw_package peridot_rpc_server
 
-set_sw_property version 16.1
+set_sw_property version 1.2
 set_sw_property auto_initialize true
 set_sw_property bsp_subdirectory services
 
