@@ -12,6 +12,8 @@
 #ifdef RUBIC_AGENT_ENABLE_PROGRAMMER
 # include "md5.h"
 #endif  /* RUBIC_AGENT_ENABLE_PROGRAMMER */
+#include "io.h"
+#include "sys/alt_irq.h"
 
 typedef struct rubic_agent_runtime_s {
 	const char *name;
@@ -545,8 +547,42 @@ static int rubic_agent_method_queue(peridot_rpc_server_async_context *context)
  */
 static void *rubic_agent_method_status(const void *params)
 {
-	// FIXME
-	return NULL;
+	char temp[20];
+	void *subdoc, *result;
+	int i;
+
+	subdoc = malloc(bson_empty_size + (4 + bson_empty_size + bson_measure_boolean("running")) * RUBIC_AGENT_WORKER_THREADS);
+	if (!subdoc) {
+		goto nomem;
+	}
+	bson_create_empty_document(subdoc);
+
+#if (RUBIC_AGENT_WORKER_THREADS > 10)
+# error "rubic_agent.workers_max must be equal or smaller than 10."
+#endif
+
+	for (i = 0; i < RUBIC_AGENT_WORKER_THREADS; ++i) {
+		char key[2];
+		key[0] = '0' + i;
+		key[1] = '\0';
+		rubic_agent_worker *worker = &state.workers[i];
+		bson_create_empty_document(temp);
+		bson_set_boolean(temp, "running", worker->state != WORKER_STATE_IDLE);
+		bson_set_subdocument(subdoc, key, temp);
+	}
+
+	result = malloc(bson_empty_size + bson_measure_array("threads", subdoc));
+	if (!result) {
+		free(subdoc);
+nomem:
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	bson_create_empty_document(result);
+	bson_set_array(result, "threads", subdoc);
+	free(subdoc);
+	return result;
 }
 
 /**
@@ -747,6 +783,27 @@ inval:
 	errno = 0;
 	return NULL;
 }
+/**
+ * @func rubic_agent_method_prog_reset
+ * @brief Programmer reset request (sync)
+ * @param params {
+ * }
+ * @return null
+ */
+void *rubic_agent_method_prog_reset(const void *params)
+{
+#if ((RUBIC_AGENT_DUALBOOT_BASE) > 0)
+	// Disable IRQs
+	alt_irq_disable_all();
+	// Wait for IP busy signal cleared
+	while (IORD((RUBIC_AGENT_DUALBOOT_BASE), 3) & 1);
+	// Trigger reconfiguration
+	IOWR((RUBIC_AGENT_DUALBOOT_BASE), 0, 1);
+	// Halt system
+	for (;;);
+#endif
+	return NULL;
+}
 
 /**
  * @func rubic_agent_register_programmer
@@ -760,6 +817,7 @@ int rubic_agent_register_programmer(rubic_agent_prog_blksize blksize, rubic_agen
 	state.prog.user_data = user_data;
 	peridot_rpc_server_register_sync_method("rubic.prog.hash", rubic_agent_method_prog_hash);
 	peridot_rpc_server_register_sync_method("rubic.prog.write", rubic_agent_method_prog_write);
+	peridot_rpc_server_register_sync_method("rubic.prog.reset", rubic_agent_method_prog_reset);
 	return 0;
 }
 #endif  /* RUBIC_AGENT_ENABLE_PROGRAMMER */

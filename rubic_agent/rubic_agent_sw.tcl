@@ -4,7 +4,7 @@
 
 create_sw_package rubic_agent
 
-set_sw_property version 1.2
+set_sw_property version 1.3
 set_sw_property auto_initialize true
 set_sw_property bsp_subdirectory services
 
@@ -27,5 +27,6 @@ add_sw_setting decimal_number system_h_define workers_max RUBIC_AGENT_WORKER_THR
 add_sw_setting decimal_number system_h_define runtimes_max RUBIC_AGENT_MAX_RUNTIMES 1 "Maximum number of runtimes"
 add_sw_setting decimal_number system_h_define storages_max RUBIC_AGENT_MAX_STORAGES 1 "Maximum number of storages"
 add_sw_setting boolean_define_only system_h_define enable_programmer RUBIC_AGENT_ENABLE_PROGRAMMER 1 "Enable programmer (Firmware updater)"
+add_sw_setting unquoted_string system_h_define dualboot_base RUBIC_AGENT_DUALBOOT_BASE 0 "Base address of altera_dual_boot IP for programmer reset (disabled if zero)"
 
 # End of file
