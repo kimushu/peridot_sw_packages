@@ -238,7 +238,7 @@ int peridot_rpc_server_async_callback(peridot_rpc_server_async_context *context,
     rpcsrv_job *job = (rpcsrv_job *)context;
     int off_id;
 
-    if (bson_get_props(&job->data, "id", &off_id) == 1) {
+    if (bson_get_props(&job->data, "id", &off_id, NULL) == 1) {
         return send_reply(job, off_id, result, result_errno);
     }
 
