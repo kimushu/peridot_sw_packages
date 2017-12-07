@@ -36,6 +36,9 @@ extern int bson_set_element(void *doc1, const char *key, const void *doc2, int o
 extern int bson_measure_element(const char *key, const void *doc, int offset);
 extern int bson_measure_document(const void *doc);
 
+extern void *bson_alloc(int content_length);
+extern void bson_free(void *doc);
+
 #ifdef __cplusplus
 }	/* extern "C" */
 #endif

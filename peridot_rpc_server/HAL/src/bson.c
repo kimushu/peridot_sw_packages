@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdlib.h>
 
 const char bson_empty_document[] = {5,0,0,0,0};
 const int bson_empty_size = sizeof(bson_empty_document);
@@ -514,4 +515,18 @@ int bson_measure_element(const char *key, const void *doc, int offset)
 int bson_measure_document(const void *doc)
 {
 	return read_unaligned_int(doc);
+}
+
+void *bson_alloc(int content_length)
+{
+	void *doc = malloc(5 /* bson_empty_size */ + content_length);
+	if (doc) {
+		bson_create_empty_document(doc);
+	}
+	return doc;
+}
+
+void bson_free(void *doc)
+{
+	free(doc);
 }
