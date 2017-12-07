@@ -67,12 +67,13 @@ void digest_md5_calc(digest_md5_t *result, const void *ptr, int len)
         uint32_t D = d0;
         uint32_t F;
         int g;
-        const uint32_t *input;
+        const uint8_t *input_bytes;
+        uint32_t input;
         int i;
         
         if (len >= 64) {
             // This chunk contains input bits only
-            input = (const uint32_t *)buf;
+            input_bytes = (const uint8_t *)buf;
             buf += 64;
         } else {
             memset(temp, 0, 64);
@@ -87,7 +88,7 @@ void digest_md5_calc(digest_md5_t *result, const void *ptr, int len)
                 temp[58] = (total_bits >> 16) & 0xff;
                 temp[59] = (total_bits >> 24) & 0xff;
             }
-            input = (const uint32_t *)temp;
+            input_bytes = (const uint8_t *)temp;
         }
 
         for (i = 0; i < 64; ++i) {
@@ -107,7 +108,9 @@ void digest_md5_calc(digest_md5_t *result, const void *ptr, int len)
             uint32_t dTemp = D;
             D = C;
             C = B;
-            B = B + left_rotate(A + F + md5_table2[i] + input[g], md5_table1[i]);
+            input = input_bytes[g * 4 + 0] | (input_bytes[g * 4 + 1] << 8) |
+                    (input_bytes[g * 4 + 2] << 16) | (input_bytes[g * 4 + 3] << 24);
+            B = B + left_rotate(A + F + md5_table2[i] + input, md5_table1[i]);
             A = dTemp;
         }
         a0 += A;
