@@ -41,6 +41,7 @@ extern int peridot_rpc_server_init(void);
 extern int peridot_rpc_server_register_sync_method(const char *name, peridot_rpc_server_sync_function func);
 extern int peridot_rpc_server_register_async_method(const char *name, peridot_rpc_server_async_function func);
 extern int peridot_rpc_server_async_callback(peridot_rpc_server_async_context *context, void *result, int result_errno);
+extern int peridot_rpc_server_async_callback_error(peridot_rpc_server_async_context *context, void *error);
 extern int peridot_rpc_server_service(void);
 
 #define PERIDOT_RPC_SERVER_INSTANCE(name, state) extern int alt_no_storage

@@ -230,22 +230,40 @@ int peridot_rpc_server_register_async_method(const char *name, peridot_rpc_serve
 }
 
 /**
- * @func peridot_rpc_server_async_callback
- * @brief Callback for async methods
+ * @func async_reply
+ * @brief Send reply for async methods
  */
-int peridot_rpc_server_async_callback(peridot_rpc_server_async_context *context, void *result, int result_errno)
+static int async_reply(peridot_rpc_server_async_context *context, void *result_or_error, int result_errno)
 {
     rpcsrv_job *job = (rpcsrv_job *)context;
     int off_id;
 
     if (bson_get_props(&job->data, "id", &off_id) == 1) {
-        return send_reply(job, off_id, result, result_errno);
+        return send_reply(job, off_id, result_or_error, result_errno);
     }
 
     // For notify call
-    free(result);
+    free(result_or_error);
     free(job);
     return 0;
+}
+
+/**
+ * @func peridot_rpc_server_async_callback
+ * @brief Callback for async methods
+ */
+int peridot_rpc_server_async_callback(peridot_rpc_server_async_context *context, void *result, int result_errno)
+{
+    return async_reply(context, result_errno == 0 ? result : NULL, result_errno);
+}
+
+/**
+ * @func peridot_rpc_server_async_callback_error
+ * @brief Callback with error for async methods
+ */
+int peridot_rpc_server_async_callback_error(peridot_rpc_server_async_context *context, void *error)
+{
+    return async_reply(context, error, JSONRPC_ERR_INTERNAL_ERROR);
 }
 
 /**
@@ -327,9 +345,10 @@ reply:
  * @func send_reply
  * @brief Send reply message and cleanup job
  */
-static int send_reply(rpcsrv_job *job, int off_id, void *result, int result_errno)
+static int send_reply(rpcsrv_job *job, int off_id, void *result_or_error, int result_errno)
 {
-    alt_u8 error_doc[16];
+    alt_u8 error_doc_buffer[16];
+    void *error_doc;
     void *output;
     int reply_len;
     void *input = &job->data;
@@ -340,27 +359,33 @@ reply:
     reply_len += bson_measure_element("id", input, off_id);
     if (result_errno == 0) {
         // Success
-        if (result) {
-            reply_len += bson_measure_subdocument("result", result);
+        if (result_or_error) {
+            reply_len += bson_measure_subdocument("result", result_or_error);
         } else {
             reply_len += bson_measure_null("result");
         }
     } else {
         // Fail
-        bson_create_empty_document(error_doc);
-        bson_set_int32(error_doc, "code", result_errno);
+        if (result_or_error) {
+            error_doc = result_or_error;
+        } else {
+            bson_create_empty_document(error_doc_buffer);
+            bson_set_int32(error_doc_buffer, "code", result_errno);
+            error_doc = error_doc_buffer;
+        }
         reply_len += bson_measure_subdocument("error", error_doc);
     }
     output = malloc(reply_len);
     if (!output) {
         if (result_errno != 0) {
             // FIXME: Double error => Ignore this packet
+            free(result_or_error);
             free(job);
             return 0;
         }
         result_errno = JSONRPC_ERR_INTERNAL_ERROR;
-        free(result);
-        result = NULL;
+        free(result_or_error);
+        result_or_error = NULL;
         goto reply;
     }
 
@@ -371,13 +396,14 @@ reply:
 
     if (result_errno == 0) {
         if (result) {
-            bson_set_subdocument(output, "result", result);
-            free(result);
+            bson_set_subdocument(output, "result", result_or_error);
+            free(result_or_error);
         } else {
             bson_set_null(output, "result");
         }
     } else {
         bson_set_subdocument(output, "error", error_doc);
+        free(result_or_error);
     }
     peridot_sw_hostbridge_gen2_source(&state.channel, output, reply_len, HOSTBRIDGE_GEN2_SOURCE_PACKETIZED);
     free(output);
