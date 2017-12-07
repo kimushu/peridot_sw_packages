@@ -348,7 +348,7 @@ reply:
 static int send_reply(rpcsrv_job *job, int off_id, void *result_or_error, int result_errno)
 {
     alt_u8 error_doc_buffer[16];
-    void *error_doc;
+    void *error_doc = error_doc_buffer;
     void *output;
     int reply_len;
     void *input = &job->data;
@@ -371,7 +371,6 @@ reply:
         } else {
             bson_create_empty_document(error_doc_buffer);
             bson_set_int32(error_doc_buffer, "code", result_errno);
-            error_doc = error_doc_buffer;
         }
         reply_len += bson_measure_subdocument("error", error_doc);
     }
@@ -395,7 +394,7 @@ reply:
     free(job);
 
     if (result_errno == 0) {
-        if (result) {
+        if (result_or_error) {
             bson_set_subdocument(output, "result", result_or_error);
             free(result_or_error);
         } else {
