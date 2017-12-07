@@ -530,3 +530,222 @@ void bson_free(void *doc)
 {
 	free(doc);
 }
+
+#ifdef BSON_ENABLE_DUMP
+#include <stdio.h>
+#include <inttypes.h>
+
+static const void *bson_dump_impl(const void *doc, int indent, void (*output)(void *user, const char *fmt, ...), void *user, int is_array, int total_indent)
+{
+	const char *data;
+	const char *end;
+	char *indent_text;
+	const char *sep = "";
+
+	if (!doc) {
+		(*output)(user, "null");
+		return NULL;
+	}
+
+	data = (const char *)doc;
+	end = data + read_unaligned_int(data);
+	data += 4;
+
+	if (indent) {
+		total_indent += indent;
+		indent_text = (char *)alloca(total_indent + 2);
+		memset(indent_text + 1, ' ', total_indent);
+		indent_text[0] = '\n';
+		indent_text[total_indent] = '\0';
+	} else {
+		indent_text = (char *)"";
+	}
+	(*output)(user, "%c", is_array ? '[' : '{');
+
+	while (data < end) {
+		const char *key;
+		char type = *data++;
+		if (type == 0) {
+			(*output)(user, "\n%c" + (indent ? 0 : 1), is_array ? ']' : '}');
+			if (data < end) {
+				(*output)(user, "!!! Junk data after document !!!");
+			}
+			return end;
+		}
+
+		key = data;
+		data += (strlen(key) + 1);
+		if (data >= end) {
+			(*output)(user, "!!! Key is too long !!!");
+			return NULL;
+		}
+		(*output)(user, "%s%s\"%s\":", sep, indent_text, key);
+		sep = ",";
+
+		switch (type) {
+		case 0x01:
+			// 64-bit binary floating point
+			{
+				double value;
+				memcpy(&value, data, 8);
+				data += 8;
+				(*output)(user, "%lf", value);
+			}
+			break;
+		case 0x02:
+			// UTF-8 string
+			{
+				int len = 0;
+				const char *value;
+				memcpy(&len, data, 4);
+				data += 4;
+				value = data;
+				data += len;
+				(*output)(user, "\"%s\"", value);
+				if (data[-1] != '\0') {
+					(*output)(user, "!!! Invalid NUL byte !!!");
+					return NULL;
+				}
+			}
+			break;
+		case 0x03:
+		case 0x04:
+			// Embedded document / Array
+			data = (const char *)bson_dump_impl(data, indent, output, user, (type == 4), total_indent);
+			if (!data) {
+				return data;
+			}
+			break;
+		case 0x05:
+			// Binary data
+			{
+				int len = 0;
+				int off;
+				const unsigned char *value;
+				unsigned char subtype;
+				memcpy(&len, data, 4);
+				data += 4;
+				subtype = *data++;
+				value = (const unsigned char *)data;
+				data += len;
+				(*output)(user, "<Binary");
+				switch (subtype) {
+				case 0x00:
+					break;
+				case 0x01:
+					(*output)(user, ":Function");
+					break;
+				case 0x04:
+					(*output)(user, ":UUID");
+					break;
+				case 0x05:
+					(*output)(user, ":MD5");
+					break;
+				case 0x80:
+					(*output)(user, ":User");
+					break;
+				default:
+					(*output)(user, ":0x%02x", subtype);
+					break;
+				}
+				for (off = 0; off < len; ++off) {
+					(*output)(user, " %02x", *value++);
+				}
+				(*output)(user, ">");
+			}
+			break;
+		case 0x06:
+			// Undefined value
+			(*output)(user, "undefined");
+			break;
+		case 0x08:
+			// Boolean
+			(*output)(user, *data++ ? "true" : "false");
+			break;
+		case 0x09:
+		case 0x12:
+			// UTC datetime / 64-bit integer
+			{
+				long long value;
+				memcpy(&value, data, 8);
+				data += 8;
+				(*output)(user, "%"PRId64, value);
+			}
+			break;
+		case 0x0a:
+			// Null value
+			(*output)(user, "null");
+			break;
+		case 0x10:
+			// 32-bit integer
+			{
+				long value;
+				memcpy(&value, data, 4);
+				data += 4;
+				(*output)(user, "%ld", value);
+			}
+			break;
+		case 0x11:
+			// Timestamp
+			{
+				unsigned long long value;
+				memcpy(&value, data, 8);
+				data += 8;
+				(*output)(user, "%"PRIu64, value);
+			}
+			break;
+		default:
+			(*output)(user, "!!! Unsupported type: 0x%02x !!!", type);
+			return NULL;
+		}
+	}
+
+	(*output)(user, "!!! Invalid EOD !!!");
+	return NULL;
+}
+
+typedef struct {
+	int length;
+	int capacity;
+	char *buffer;
+} bson_dump_block;
+
+static void bson_dump_append(bson_dump_block *block, const char *fmt, ...)
+{
+	char temp[128];
+	int growth;
+	int new_len;
+	int capacity;
+	va_list args;
+
+	va_start(args, fmt);
+	growth = vsnprintf(temp, sizeof(temp), fmt, args);
+	va_end(args);
+
+	new_len = block->length + growth;
+	capacity = block->capacity;
+	if (new_len >= capacity) {
+		if (capacity == 0) {
+			capacity = sizeof(temp);
+		}
+		while (new_len >= capacity) {
+			capacity *= 2;
+		}
+		char *new_buffer = realloc(block->buffer, capacity);
+		if (!new_buffer) {
+			return;
+		}
+		block->buffer = new_buffer;
+		block->capacity = capacity;
+	}
+	memcpy(block->buffer + block->length, temp, growth + 1);
+	block->length = new_len;
+}
+
+char *bson_dump(const void *doc, int indent)
+{
+	bson_dump_block block = { 0 };
+	bson_dump_impl(doc, indent, (void (*)(void *, const char *, ...))bson_dump_append, &block, 0, 0);
+	return block.buffer;
+}
+#endif	/* BSON_ENABLE_DUMP */

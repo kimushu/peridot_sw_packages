@@ -39,6 +39,8 @@ extern int bson_measure_document(const void *doc);
 extern void *bson_alloc(int content_length);
 extern void bson_free(void *doc);
 
+extern char *bson_dump(const void *doc, int indent);
+
 #ifdef __cplusplus
 }	/* extern "C" */
 #endif
