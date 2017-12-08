@@ -8,12 +8,12 @@
 #include "sys/alt_cache.h"
 #include "peridot_rpc_server.h"
 #include "peridot_sw_hostbridge_gen2.h"
-#if (PERIDOT_RPCSRV_WORKER_THREADS) > 0
-# define PERIDOT_RPCSRV_MULTI_THREAD
+#if (PERIDOT_RPCSRV_WORKER_THREADS > 0) && !defined(PERIDOT_RPCSRV_MULTI_THREADED)
+# error "peridot_rpc_server.multi_threaded must be set to true if there are worker threads"
+#endif
+#ifdef PERIDOT_RPCSRV_MULTI_THREADED
 # include <pthread.h>
 # include <semaphore.h>
-#else
-# undef PERIDOT_RPCSRV_MULTI_THREAD
 #endif
 #include "bson.h"
 
@@ -38,8 +38,10 @@ struct peridot_rpc_server_state_s {
     } length;
     rpcsrv_job *incoming_job;
     rpcsrv_job *volatile pending_job;
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+#ifdef PERIDOT_RPCSRV_MULTI_THREADED
     sem_t sem;
+#endif
+#if (PERIDOT_RPCSRV_WORKER_THREADS > 0)
     pthread_t tids[PERIDOT_RPCSRV_WORKER_THREADS];
 #endif
     peridot_rpc_server_method_entry *method_first, *method_last;
@@ -133,7 +135,7 @@ next_packet:
         }
         state.pending_job = state.incoming_job;
         state.incoming_job = NULL;
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+#ifdef PERIDOT_RPCSRV_MULTI_THREADED
         sem_post(&state.sem);
 #endif
         goto next_packet;
@@ -142,7 +144,7 @@ next_packet:
     return read_len;
 }
 
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+#if (PERIDOT_RPCSRV_WORKER_THREADS > 0)
 /*
  * Worker for server operations
  */
@@ -154,17 +156,17 @@ static void *peridot_rpc_server_worker(void *param)
     }
     return NULL;
 }
-#endif  /* PERIDOT_RPCSRV_MULTI_THREAD */
+#endif  /* (PERIDOT_RPCSRV_WORKER_THREADS > 0) */
 
 /*
  * Initialize RPC server
  */
 int peridot_rpc_server_init(void)
 {
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+#if (PERIDOT_RPCSRV_WORKER_THREADS > 0)
     int i;
     char name[16];
-#endif
+#endif  /* (PERIDOT_RPCSRV_WORKER_THREADS > 0) */
 
     // Register packetized stream channel
     state.channel.dest.sink = peridot_rpc_server_sink;
@@ -173,8 +175,10 @@ int peridot_rpc_server_init(void)
     state.channel.use_fd = 0;
     peridot_sw_hostbridge_gen2_register_channel(&state.channel);
 
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+#ifdef PERIDOT_RPCSRV_MULTI_THREADED
     sem_init(&state.sem, 0, 0);
+#endif  /* PERIDOT_RPCSRV_MULTI_THREADED */
+#if (PERIDOT_RPCSRV_WORKER_THREADS > 0)
     strcpy(name, "rpc_server_x");
     for (i = 0; i < (PERIDOT_RPCSRV_WORKER_THREADS); ++i) {
         int result;
@@ -185,7 +189,7 @@ int peridot_rpc_server_init(void)
         name[11] = i + '0';
         pthread_setname_np(state.tids[i], name);
     }
-#endif
+#endif  /* (PERIDOT_RPCSRV_WORKER_THREADS > 0) */
 
     return 0;
 }
@@ -278,7 +282,7 @@ int peridot_rpc_server_service(void)
     peridot_rpc_server_method_entry *entry;
     void *result;
 
-#ifdef PERIDOT_RPCSRV_MULTI_THREAD
+#ifdef PERIDOT_RPCSRV_MULTI_THREADED
     sem_wait(&state.sem);
 #endif
     rpcsrv_job *job = state.pending_job;

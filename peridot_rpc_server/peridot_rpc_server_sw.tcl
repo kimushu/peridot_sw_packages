@@ -4,7 +4,7 @@
 
 create_sw_package peridot_rpc_server
 
-set_sw_property version 1.4
+set_sw_property version 1.5
 set_sw_property auto_initialize true
 set_sw_property bsp_subdirectory services
 
@@ -29,6 +29,7 @@ add_sw_property supported_bsp_type HAL
 #
 add_sw_setting decimal_number system_h_define channel PERIDOT_RPCSRV_CHANNEL 1 "Channel number for RPC server"
 add_sw_setting decimal_number system_h_define request_length PERIDOT_RPCSRV_MAX_REQUEST_LENGTH 8192 "Maximum byte length of request data"
+add_sw_setting boolean_define_only system_h_define multi_threaded PERIDOT_RPCSRV_MULTI_THREADED 0 "Use RPC server in multi-threaded environment"
 add_sw_setting decimal_number system_h_define worker_threads PERIDOT_RPCSRV_WORKER_THREADS 0 "Number of worker threads for processing requests. When non-zero value is specified, multi-threading (pthread) support is required."
 
 # End of file
