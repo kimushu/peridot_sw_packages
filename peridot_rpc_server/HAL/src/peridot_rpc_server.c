@@ -242,7 +242,7 @@ static int async_reply(peridot_rpc_server_async_context *context, void *result_o
     rpcsrv_job *job = (rpcsrv_job *)context;
     int off_id;
 
-    if (bson_get_props(&job->data, "id", &off_id) == 1) {
+    if (bson_get_props(&job->data, "id", &off_id, NULL) == 1) {
         return send_reply(job, off_id, result_or_error, result_errno);
     }
 
