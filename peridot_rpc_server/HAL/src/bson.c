@@ -280,6 +280,20 @@ int bson_get_int32(const void *doc, int offset, int default_value)
 	return read_unaligned_int(data);
 }
 
+double bson_get_double(const void *doc, int offset, double default_value)
+{
+	union {
+		double d;
+		char c[8];
+	} result;
+	const char *data = seek_data(doc, offset, 0x0101, NULL);
+	if (!data) {
+		return default_value;
+	}
+	memcpy(result.c, data, 8);
+	return result.d;
+}
+
 void bson_create_empty_document(void *doc)
 {
 	((unsigned char *)doc)[0] = 5;
@@ -386,6 +400,16 @@ int bson_set_int32(void *doc, const char *key, int value)
 int bson_measure_int32(const char *key)
 {
 	return bson_set_int32(NULL, key, 0);
+}
+
+int bson_set_double(void *doc, const char *key, double value)
+{
+	return set_subelement(doc, key, 0x01, &value, 8);
+}
+
+int bson_measure_double(const char *key)
+{
+	return bson_set_double(NULL, key, 0.0);
 }
 
 int bson_set_null(void *doc, const char *key)
